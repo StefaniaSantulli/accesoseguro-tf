@@ -1,0 +1,10 @@
+# Archivo generado por bootstrap/ (no editar a mano).
+# Uso: cd infra && terraform init -backend-config=backend.hcl
+bucket       = "${bucket}"
+key          = "${key}"
+region       = "${region}"
+encrypt      = true
+use_lockfile = true
+%{ if lock_table != "" ~}
+dynamodb_table = "${lock_table}"
+%{ endif ~}

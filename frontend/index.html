@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AccesoSeguro</title>
+  <!-- PLACEHOLDER: reemplazar por el front real. config.js lo genera Terraform. -->
+  <script src="config.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 48px auto; padding: 0 16px; }
+    button { padding: 8px 16px; }
+    pre { background: #f4f4f4; padding: 12px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>AccesoSeguro</h1>
+  <button id="login">Ingresar</button>
+  <button id="probar">Probar API</button>
+  <pre id="salida"></pre>
+
+  <script>
+    const cfg = window.APP_CONFIG;
+    const salida = document.getElementById("salida");
+
+    // Los tokens vuelven después del "#": se guardan y se limpia la URL.
+    if (location.hash.includes("id_token")) {
+      const p = new URLSearchParams(location.hash.slice(1));
+      sessionStorage.setItem("id_token", p.get("id_token"));
+      history.replaceState(null, "", location.pathname);
+    }
+
+    document.getElementById("login").onclick = () => { location.href = cfg.loginUrl; };
+
+    document.getElementById("probar").onclick = async () => {
+      const token = sessionStorage.getItem("id_token");
+      const r = await fetch(cfg.apiUrl + "/api/info", {
+        headers: token ? { Authorization: "Bearer " + token } : {}
+      });
+      salida.textContent = JSON.stringify(await r.json(), null, 2);
+    };
+  </script>
+</body>
+</html>

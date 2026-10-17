@@ -1,0 +1,11 @@
+# Copiar como terraform.tfvars y ajustar si hace falta.
+region       = "us-east-1"
+project_name = "accesoseguro"
+environment  = "dev"
+
+# Dejar vacío para que se arme con el account id (recomendado).
+state_bucket_name = ""
+
+# Con Terraform >= 1.10 el lock va en S3 (use_lockfile). Poner true solo si
+# la cátedra pide el método clásico con DynamoDB.
+create_dynamodb_lock_table = false

@@ -1,0 +1,8 @@
+# Lo genera solo bootstrap/ como backend.hcl. Si no, copiar este archivo como
+# backend.hcl y poner el nombre del bucket que muestra "terraform output" en
+# bootstrap/.
+bucket       = "accesoseguro-tfstate-123456789012"
+key          = "accesoseguro/dev/infra.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

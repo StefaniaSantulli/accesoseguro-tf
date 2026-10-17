@@ -1,0 +1,20 @@
+# Copiar como terraform.tfvars (está en .gitignore) y completar.
+region       = "us-east-1"
+project_name = "accesoseguro"
+environment  = "dev"
+
+# Versión de la imagen de la API que corre ECS (nunca latest).
+api_image_tag = "v1.0"
+
+# SES en sandbox: el remitente y los destinatarios tienen que estar verificados.
+ses_sender_email    = "equipo.accesoseguro@gmail.com"
+ses_verified_emails = ["transportista.prueba@gmail.com", "responsable.prueba@gmail.com"]
+
+# Mail que recibe las alarmas (vacío = sin suscripción).
+alarm_email = ""
+
+# RDS
+db_multi_az = true
+
+# Poner true solo si el Learner Lab deja crear trails.
+enable_cloudtrail = false

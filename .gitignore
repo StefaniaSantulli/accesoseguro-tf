@@ -1,0 +1,28 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.tfstate.lock.info
+
+# Variables con datos propios (se versionan solo los .example)
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Generado por bootstrap/ (tiene el nombre real del bucket)
+terraform/infra/backend.hcl
+
+# Zips de las Lambdas
+terraform/infra/.build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
