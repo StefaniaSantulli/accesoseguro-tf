@@ -1,11 +1,11 @@
 output "state_bucket_name" {
   description = "Bucket donde vive el state del Terraform principal."
-  value       = aws_s3_bucket.tfstate.bucket
+  value       = terraform_data.tfstate_bucket.output.name
 }
 
 output "state_bucket_arn" {
   description = "ARN del bucket del state."
-  value       = aws_s3_bucket.tfstate.arn
+  value       = local.state_bucket_arn
 }
 
 output "infra_state_key" {

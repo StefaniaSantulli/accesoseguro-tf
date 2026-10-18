@@ -3,74 +3,17 @@
 # CloudFront no está disponible en el Learner Lab.
 # =============================================================================
 
-resource "aws_s3_bucket" "sitio" {
-  bucket        = local.bucket_names["sitio"]
-  force_destroy = var.force_destroy_buckets
-
-  tags = { Name = local.bucket_names["sitio"] }
-}
-
-resource "aws_s3_bucket_website_configuration" "sitio" {
-  bucket = aws_s3_bucket.sitio.id
-
-  index_document {
-    suffix = "index.html"
-  }
-
-  error_document {
-    key = "index.html"
-  }
-}
-
-# Es el único bucket con acceso público habilitado.
-resource "aws_s3_bucket_public_access_block" "sitio" {
-  bucket = aws_s3_bucket.sitio.id
-
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = false
-  restrict_public_buckets = false
-}
-
-resource "aws_s3_bucket_ownership_controls" "sitio" {
-  bucket = aws_s3_bucket.sitio.id
-
-  rule {
-    object_ownership = "BucketOwnerEnforced"
-  }
-}
-
+# Bucket público de solo lectura con website hosting (módulo propio).
 # SSE-S3 y no KMS: el visitante es anónimo y no puede pedir kms:Decrypt.
-# Con KMS los objetos devolverían error.
-resource "aws_s3_bucket_server_side_encryption_configuration" "sitio" {
-  bucket = aws_s3_bucket.sitio.id
+module "sitio" {
+  source = "../modules/s3-bucket"
 
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-# Cualquiera puede LEER objetos. Nadie puede listar, escribir ni borrar.
-resource "aws_s3_bucket_policy" "sitio" {
-  bucket = aws_s3_bucket.sitio.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "LecturaPublicaDelSitio"
-        Effect    = "Allow"
-        Principal = "*"
-        Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.sitio.arn}/*"
-      }
-    ]
-  })
-
-  # Con block_public_policy todavía en true, AWS rechaza una policy pública.
-  depends_on = [aws_s3_bucket_public_access_block.sitio]
+  name          = local.bucket_names["sitio"]
+  region        = var.region
+  force_destroy = var.force_destroy_buckets
+  versioning    = false # el sitio ya está versionado en git
+  kms_key_arn   = null
+  website       = true
 }
 
 # -----------------------------------------------------------------------------
@@ -79,7 +22,7 @@ resource "aws_s3_bucket_policy" "sitio" {
 resource "aws_s3_object" "sitio" {
   for_each = local.frontend_files
 
-  bucket = aws_s3_bucket.sitio.id
+  bucket = module.sitio.id
   key    = each.value
   source = "${local.frontend_dir}/${each.value}"
 
@@ -96,7 +39,7 @@ resource "aws_s3_object" "sitio" {
 
 # config.js se genera con los valores reales de esta infraestructura.
 resource "aws_s3_object" "config_js" {
-  bucket       = aws_s3_bucket.sitio.id
+  bucket       = module.sitio.id
   key          = "config.js"
   content_type = local.mime_types["js"]
 
