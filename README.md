@@ -47,7 +47,8 @@ espera. La tabla DynamoDB del método clásico queda como opción (`create_dynam
 │   └── modules/                      # Módulos propios
 │       ├── network/                  # VPC, subredes, IGW, rutas y NACL
 │       ├── lambda-function/          # Lambda + zip + log group
-│       └── sqs-with-dlq/             # cola + DLQ + alarma
+│       ├── sqs-with-dlq/             # cola + DLQ + alarma
+│       └── s3-bucket/                # bucket compatible con el Learner Lab
 ├── lambdas/<nombre>/handler.py       # código de las 6 Lambdas
 ├── app/                              # API Flask + Dockerfile (imagen de ECS)
 ├── frontend/                         # sitio estático + config.js.tftpl
@@ -118,7 +119,8 @@ Security Groups encadenados: `alb` (80 desde internet) → `ecs` (5000 solo desd
 | `modules/network` | **Propio** | VPC en 3 capas x 2 AZ, IGW, tablas de ruteo y NACL | Una vez, en `network.tf` |
 | `modules/lambda-function` | **Propio** | Empaquetar y crear una Lambda con su log group | Una llamada con `for_each` crea las 6 |
 | `modules/sqs-with-dlq` | **Propio** | Cola + DLQ + alarma | Una llamada con `for_each` crea las 3 colas |
-| `terraform-aws-modules/s3-bucket/aws` `~> 5.0` | **Externo** (Terraform Registry) | Buckets privados con cifrado KMS, versionado, lifecycle, CORS y política "solo HTTPS" | Una llamada con `for_each` crea documentos y auditoría |
+| `modules/s3-bucket` | **Propio** | Bucket con cifrado, versionado, políticas, lifecycle, CORS y website, compatible con el Learner Lab | `for_each` (documentos y auditoría), una vez para el sitio y con `count` para CloudTrail |
+| `terraform-aws-modules/ecr/aws` `~> 2.0` | **Externo** (Terraform Registry) | Repositorio ECR con tags inmutables, escaneo, cifrado KMS y lifecycle policy | Una vez, en `ecs.tf` |
 
 Cada módulo propio sigue la estructura recomendada en clase: `main.tf`, `variables.tf`,
 `outputs.tf`, `versions.tf` y `README.md`.
@@ -143,7 +145,7 @@ Cada módulo propio sigue la estructura recomendada en clase: `main.tf`, `variab
 | `lookup()`, `split()`, `element()`, `length()`, `lower()` | `frontend.tf` | Elegir el Content-Type según la extensión |
 | `urlencode()`, `join()` | `locals.tf` | Armar la URL de login de la Hosted UI |
 | `keys()`, `sort()` | `ecs.tf` | Pasar el mapa de variables de entorno al formato de ECS |
-| `toset()`, `compact()`, `concat()` | `messaging.tf`, `network.tf` | Lista de mails a verificar sin vacíos; set para `for_each` |
+| `toset()`, `compact()`, `concat()` | `messaging.tf`, `network.tf`, `modules/s3-bucket` | Lista de mails a verificar sin vacíos; set para `for_each` |
 | `tostring()` | `locals.tf` | Las variables de entorno tienen que ser strings |
 | `title()`, `replace()` | `messaging.tf`, `network.tf` | Armar el `Sid` de la policy y el nombre de cada endpoint |
 | `max()` | `ecs.tf` | El máximo del Auto Scaling nunca queda por debajo del mínimo |
@@ -158,7 +160,7 @@ Cada módulo propio sigue la estructura recomendada en clase: `main.tf`, `variab
 | Meta-argumento | Dónde | Por qué |
 |---|---|---|
 | `for_each` | Subredes, rutas, SG y sus reglas, endpoints, grupos de Cognito, `module.lambdas`, `module.sqs`, `module.buckets`, event source mappings, suscripciones SNS, alarmas | Crear N recursos parecidos a partir de un mapa, con claves estables (`publica-a`, `cola-auditoria`) |
-| `count` | IGW (si hay capa pública), CloudTrail (`enable_cloudtrail`), suscripción de alarmas por mail, tabla DynamoDB de locks, `local_file` del backend | Recursos opcionales: 0 o 1 según una variable |
+| `count` | IGW (si hay capa pública), CloudTrail y su bucket (`enable_cloudtrail`, también sobre un `module`), website / lifecycle / CORS opcionales en `s3-bucket`, suscripción de alarmas por mail, tabla DynamoDB de locks, `local_file` del backend | Recursos opcionales: 0 o 1 según una variable |
 | `depends_on` | Policy del bucket después del public access block; notificación S3 después de la policy de la cola; suscripción SNS después de la policy; servicio ECS después del listener y de los endpoints; CloudTrail después de la policy del bucket; log group antes de la Lambda | Dependencias que AWS exige pero que Terraform no puede deducir de las referencias |
 | `lifecycle { prevent_destroy }` | Bucket del state (`bootstrap/`) | Que un `destroy` nunca borre el state |
 | `lifecycle { create_before_destroy }` | Security Groups, parameter group de RDS | Reemplazar sin cortar: AWS no deja borrar un SG en uso |
@@ -175,7 +177,7 @@ Atajo: todos los pasos están en el `Makefile` (`make help`).
 
 ### Requisitos
 - Terraform ≥ 1.10 (`terraform -version`)
-- AWS CLI v2 y Docker
+- AWS CLI v2 (Terraform la usa para crear los buckets) y Docker
 - Credenciales del Learner Lab: **AWS Details → AWS CLI** y pegarlas en `~/.aws/credentials`
   (vencen cada sesión de 4 horas)
 
@@ -274,6 +276,7 @@ el `fmt -check`.
 
 | Restricción | Cómo se resolvió |
 |---|---|
+| Una *service control policy* prohíbe `s3:GetBucketObjectLockConfiguration`, que `aws_s3_bucket` lee siempre (falla con `AccessDenied`) | El bucket se crea con la AWS CLI desde `terraform_data` + `local-exec` (módulo `s3-bucket`); cifrado, versionado, políticas, lifecycle y website siguen en Terraform con los recursos `aws_s3_bucket_*`. Lo mismo para el bucket del state en `bootstrap/` |
 | No se pueden crear roles IAM | ECS y Lambdas usan `LabRole` (`data.aws_iam_role.lab_role`). Sí se escriben políticas sobre los recursos (buckets, colas, KMS) |
 | No hay CloudFront ni HTTPS en el sitio | Cognito vuelve a API Gateway `/callback` (HTTPS) y la Lambda redirige al sitio con los tokens en el `#` |
 | Las tasks no tienen salida a internet | VPC Endpoints. Las llaves públicas de Cognito (JWKS) las lee Terraform (`data.http`) y se pasan al contenedor como variable de entorno |

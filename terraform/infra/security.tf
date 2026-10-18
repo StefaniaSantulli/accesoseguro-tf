@@ -84,61 +84,44 @@ resource "aws_secretsmanager_secret_version" "db" {
 # -----------------------------------------------------------------------------
 # CloudTrail (opcional, count = 0 o 1)
 # -----------------------------------------------------------------------------
-resource "aws_s3_bucket" "cloudtrail" {
-  count = var.enable_cloudtrail ? 1 : 0
+module "cloudtrail_bucket" {
+  source = "../modules/s3-bucket"
+  count  = var.enable_cloudtrail ? 1 : 0
 
-  bucket        = format("%s-cloudtrail-%s", local.name_prefix, local.account_id)
+  name          = local.bucket_names["cloudtrail"]
+  region        = var.region
   force_destroy = var.force_destroy_buckets
-}
+  versioning    = false
 
-resource "aws_s3_bucket_public_access_block" "cloudtrail" {
-  count = var.enable_cloudtrail ? 1 : 0
-
-  bucket                  = aws_s3_bucket.cloudtrail[0].id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_policy" "cloudtrail" {
-  count = var.enable_cloudtrail ? 1 : 0
-
-  bucket = aws_s3_bucket.cloudtrail[0].id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "CloudTrailAclCheck"
-        Effect    = "Allow"
-        Principal = { Service = "cloudtrail.amazonaws.com" }
-        Action    = "s3:GetBucketAcl"
-        Resource  = aws_s3_bucket.cloudtrail[0].arn
-      },
-      {
-        Sid       = "CloudTrailWrite"
-        Effect    = "Allow"
-        Principal = { Service = "cloudtrail.amazonaws.com" }
-        Action    = "s3:PutObject"
-        Resource  = "${aws_s3_bucket.cloudtrail[0].arn}/AWSLogs/${local.account_id}/*"
-        Condition = {
-          StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" }
-        }
-      }
-    ]
-  })
+  extra_policy_statements = [
+    {
+      Sid       = "CloudTrailAclCheck"
+      Effect    = "Allow"
+      Principal = { Service = "cloudtrail.amazonaws.com" }
+      Action    = "s3:GetBucketAcl"
+      Resource  = "arn:aws:s3:::${local.bucket_names["cloudtrail"]}"
+    },
+    {
+      Sid       = "CloudTrailWrite"
+      Effect    = "Allow"
+      Principal = { Service = "cloudtrail.amazonaws.com" }
+      Action    = "s3:PutObject"
+      Resource  = "arn:aws:s3:::${local.bucket_names["cloudtrail"]}/AWSLogs/${local.account_id}/*"
+      Condition = { StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" } }
+    }
+  ]
 }
 
 resource "aws_cloudtrail" "main" {
   count = var.enable_cloudtrail ? 1 : 0
 
   name                          = "${local.name_prefix}-trail"
-  s3_bucket_name                = aws_s3_bucket.cloudtrail[0].id
+  s3_bucket_name                = module.cloudtrail_bucket[0].id
   include_global_service_events = true
   is_multi_region_trail         = false
   enable_log_file_validation    = true
 
   # CloudTrail valida que puede escribir en el bucket al crearse: la policy
   # tiene que existir antes. Terraform no lo deduce solo.
-  depends_on = [aws_s3_bucket_policy.cloudtrail]
+  depends_on = [module.cloudtrail_bucket]
 }

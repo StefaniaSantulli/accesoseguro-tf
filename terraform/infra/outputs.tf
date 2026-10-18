@@ -30,15 +30,15 @@ output "cognito_client_id" {
 
 output "ecr_repository_url" {
   description = "Repositorio donde se sube la imagen de la API."
-  value       = aws_ecr_repository.api.repository_url
+  value       = module.ecr.repository_url
 }
 
 output "docker_push_commands" {
   description = "Comandos para construir y subir la imagen de la API."
   value = join("\n", [
-    "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${split("/", aws_ecr_repository.api.repository_url)[0]}",
-    "docker build --platform linux/amd64 -t ${aws_ecr_repository.api.repository_url}:${var.api_image_tag} ../../app",
-    "docker push ${aws_ecr_repository.api.repository_url}:${var.api_image_tag}",
+    "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${split("/", module.ecr.repository_url)[0]}",
+    "docker build --platform linux/amd64 -t ${module.ecr.repository_url}:${var.api_image_tag} ../../app",
+    "docker push ${module.ecr.repository_url}:${var.api_image_tag}",
     "aws ecs update-service --cluster ${aws_ecs_cluster.main.name} --service ${aws_ecs_service.api.name} --force-new-deployment --region ${var.region}",
   ])
 }

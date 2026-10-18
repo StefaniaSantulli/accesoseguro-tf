@@ -54,7 +54,7 @@ locals {
   }
 
   # ---------------------------------------------------------------------------
-  # Buckets privados (módulo externo terraform-aws-modules/s3-bucket)
+  # Buckets (módulo propio s3-bucket)
   # ---------------------------------------------------------------------------
   private_buckets = {
     documentos = { versioning = true, description = "PDFs de los transportistas" }
@@ -63,35 +63,35 @@ locals {
 
   bucket_names = merge(
     { for k, _ in local.private_buckets : k => format("%s-%s-%s", local.name_prefix, k, local.account_id) },
-    { sitio = format("%s-sitio-%s", local.name_prefix, local.account_id) }
+    {
+      sitio      = format("%s-sitio-%s", local.name_prefix, local.account_id)
+      cloudtrail = format("%s-cloudtrail-%s", local.name_prefix, local.account_id)
+    }
   )
 
   bucket_lifecycle_rules = {
     documentos = [
       {
-        id      = "documentos-por-antiguedad"
-        enabled = true
-        filter  = { prefix = "empresas/" }
-        transition = [
+        id     = "documentos-por-antiguedad"
+        prefix = "empresas/"
+        transitions = [
           { days = var.documentos_lifecycle.to_standard_ia_days, storage_class = "STANDARD_IA" },
           { days = var.documentos_lifecycle.to_glacier_ir_days, storage_class = "GLACIER_IR" },
         ]
-        expiration                    = { days = var.documentos_lifecycle.expiration_days }
-        noncurrent_version_expiration = { noncurrent_days = 30 }
+        expiration_days            = var.documentos_lifecycle.expiration_days
+        noncurrent_expiration_days = 30
       }
     ]
     auditoria = [
       {
-        id         = "eventos-a-glacier"
-        enabled    = true
-        filter     = { prefix = "eventos/" }
-        transition = [{ days = 30, storage_class = "GLACIER" }]
+        id          = "eventos-a-glacier"
+        prefix      = "eventos/"
+        transitions = [{ days = 30, storage_class = "GLACIER" }]
       },
       {
-        id         = "reportes-se-borran-al-dia"
-        enabled    = true
-        filter     = { prefix = "reportes/" }
-        expiration = { days = 1 }
+        id              = "reportes-se-borran-al-dia"
+        prefix          = "reportes/"
+        expiration_days = 1
       }
     ]
   }
@@ -118,7 +118,7 @@ locals {
     ]
   }
 
-  site_url = "http://${aws_s3_bucket_website_configuration.sitio.website_endpoint}"
+  site_url = "http://${module.sitio.website_endpoint}"
 
   # ---------------------------------------------------------------------------
   # Colas SQS (módulo propio sqs-with-dlq)
@@ -144,7 +144,7 @@ locals {
 
   # Desde qué recurso puede llegar cada cola (condición aws:SourceArn).
   sqs_source_arns = {
-    documentos     = module.buckets["documentos"].s3_bucket_arn
+    documentos     = module.buckets["documentos"].arn
     auditoria      = aws_sns_topic.eventos_solicitud.arn
     notificaciones = aws_sns_topic.eventos_solicitud.arn
   }

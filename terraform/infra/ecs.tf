@@ -3,28 +3,28 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# ECR: registro de imágenes. Tags inmutables: v1.4 siempre es la misma imagen.
+# ECR: registro de imágenes. Módulo EXTERNO del Terraform Registry
+# (terraform-aws-modules/ecr/aws). Tags inmutables: v1.4 siempre es la misma
+# imagen. Se guardan solo las últimas 10 versiones (alcanza para un rollback).
 # -----------------------------------------------------------------------------
-resource "aws_ecr_repository" "api" {
-  name                 = "${local.name_prefix}-api"
-  image_tag_mutability = "IMMUTABLE"
-  force_delete         = var.force_destroy_buckets
+module "ecr" {
+  source  = "terraform-aws-modules/ecr/aws"
+  version = "~> 2.0"
 
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+  repository_name                 = "${local.name_prefix}-api"
+  repository_type                 = "private"
+  repository_image_tag_mutability = "IMMUTABLE"
+  repository_image_scan_on_push   = true
+  repository_encryption_type      = "KMS"
+  repository_kms_key              = aws_kms_key.main.arn
+  repository_force_delete         = var.force_destroy_buckets
 
-  encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.main.arn
-  }
-}
+  # Sin repository policy: ECS baja la imagen con LabRole (permiso IAM).
+  create_repository_policy = false
+  attach_repository_policy = false
 
-# Se guardan solo las últimas 10 versiones (alcanza para hacer rollback).
-resource "aws_ecr_lifecycle_policy" "api" {
-  repository = aws_ecr_repository.api.name
-
-  policy = jsonencode({
+  create_lifecycle_policy = true
+  repository_lifecycle_policy = jsonencode({
     rules = [
       {
         rulePriority = 1
@@ -87,7 +87,7 @@ resource "aws_ecs_task_definition" "api" {
   container_definitions = jsonencode([
     {
       name      = "api"
-      image     = "${aws_ecr_repository.api.repository_url}:${var.api_image_tag}"
+      image     = "${module.ecr.repository_url}:${var.api_image_tag}"
       essential = true
 
       portMappings = [
