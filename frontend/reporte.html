@@ -30,7 +30,7 @@
         <div class="mb-field">
           <label>Sede</label>
           <select class="form-select" id="select-sede">
-            <option value="">Todas las sedes</option>
+            <option value="">Mi sede</option>
           </select>
         </div>
         <div class="mb-field"><label>Desde</label><input class="form-control" type="date" id="input-desde"></div>
@@ -50,14 +50,14 @@
 <script src="assets/auth.js"></script>
 <script src="assets/api.js"></script>
 <script>
-requireRole(["admin"]);
+requireRole([ROLES.RESPONSABLE]);
 renderNav();
 
 async function cargarSedes() {
   try {
     const sedes = await apiGet("/api/sedes");
     const select = document.getElementById("select-sede");
-    select.innerHTML = '<option value="">Todas las sedes</option>' + sedes.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join("");
+    select.innerHTML = '<option value="">Mi sede</option>' + sedes.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join("");
   } catch (err) {
     console.error("No se pudieron cargar las sedes:", err);
   }

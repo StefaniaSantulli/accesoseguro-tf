@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AccesoSeguro — Elegí tu rol</title>
+<title>AccesoSeguro — Activar cuenta</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -14,8 +14,8 @@
 <header class="site-header">
   <div class="wrap">
     <span class="pill">Primer ingreso</span>
-    <h1>¿Cómo vas a usar AccesoSeguro?</h1>
-    <p>Elegí tu rol. Se elige una sola vez.</p>
+    <h1>Activá tu cuenta</h1>
+    <p>Activar cuenta. Se elige una sola vez.</p>
   </div>
 </header>
 
@@ -27,9 +27,8 @@
         <h2>Soy transportista</h2>
         <p>Cargo solicitudes de acceso a las plantas, subo mi documentación y consulto su estado.</p>
       </button>
-      <button class="card-role" type="button" onclick="elegir('administradores')">
-        <h2>Soy administrador (personal de planta)</h2>
-        <p>Apruebo o rechazo solicitudes, verifico permisos en portería, registro ingresos y egresos, y veo reportes y auditoría.</p>
+      <button class="card-role" type="button" onclick="refrescarSesion()">
+        <h2>Ya me asignaron un rol</h2><p>Actualizar mi sesión para cargar los permisos asignados.</p>
       </button>
     </div>
   </div>
@@ -47,8 +46,14 @@
 // Sin sesión -> login. Con rol ya elegido -> inicio.
 const rolActual = getRole();
 if (!rolActual) window.location.href = "login.html";
-else if (rolActual !== ROLES.SIN_ROL) window.location.href = "index.html";
+else if (![ROLES.SIN_ROL, ROLES.INVALIDO].includes(rolActual)) window.location.href = "index.html";
 
+if (rolActual === ROLES.INVALIDO) {
+  document.querySelector("button[onclick*=elegir]").disabled = true;
+  const aviso = document.getElementById("mensaje");
+  aviso.style.display = "block";
+  aviso.textContent = "Tu cuenta tiene un rol anterior o varios roles. El operador debe asignarte uno de los tres roles actuales.";
+}
 let enviando = false;
 async function elegir(grupo) {
   if (enviando) return;
@@ -60,8 +65,9 @@ async function elegir(grupo) {
     await apiPostJSON("/api/mi-rol", { grupo });
     msg.textContent = "Listo. Actualizando tu sesión...";
   } catch (err) {
-    // 409 = ya tenía rol: igual refrescamos la sesión para traerlo.
-    msg.textContent = "No se pudo guardar el rol: " + err.message + ". Actualizando tu sesión...";
+    msg.textContent = err.message;
+    enviando = false;
+    return;
   }
   // El grupo nuevo recién viaja en un token nuevo.
   setTimeout(refrescarSesion, 1200);

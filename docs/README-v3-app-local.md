@@ -1,4 +1,6 @@
-# AccesoSeguro v3 — frontend estático separado del backend
+# AccesoSeguro v3 — referencia histórica
+
+Esta guía describe una versión anterior. Para el login, los roles, la sede y las pruebas actuales, ver [Cognito y roles](cognito-y-roles.md).
 
 ## Guía rápida para el equipo (correrlo en tu computadora)
 
@@ -13,7 +15,7 @@ cd cloud-tp1
 ```
 cd backend
 pip3 install -r requirements.txt
-python3 app.py
+LOCAL_DEMO=true python3 app.py
 ```
 
 **Terminal 2 — frontend** (una Terminal nueva, también queda corriendo):

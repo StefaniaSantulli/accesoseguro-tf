@@ -92,7 +92,7 @@ flowchart LR
 | Capa (PDF) | Servicio | Archivo | Recursos principales |
 |---|---|---|---|
 | Front | S3 sitio estático | `frontend.tf` | `aws_s3_bucket.sitio`, website, policy pública de lectura, `aws_s3_object` |
-| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 2 grupos (transportistas y administradores), dominio, app client, HTTP API |
+| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 roles (transportistas, porteros y responsables_sede; grupo anterior conservado sin permisos), dominio, app client, HTTP API |
 | Entrada | Internet Gateway + ALB | `modules/network`, `alb.tf` | IGW, `aws_lb`, target group tipo `ip`, listener 80 |
 | Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
 | Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
@@ -228,21 +228,16 @@ Los tags son **inmutables**: para desplegar un cambio de la API, subí `api_imag
 make outputs    # sitio_url, api_url, login_url...
 ```
 1. Abrir `sitio_url` → **Ingresar** → registrarse en la Hosted UI de Cognito (llega un código al mail).
-2. Un usuario sin grupo es **transportista**: carga solicitudes (con PDF) y ve las suyas.
-3. Para el personal de planta, asignar el grupo:
+2. Un usuario sin grupo puede activar su cuenta como **transportista**. No puede elegirse personal de planta.
+3. El operador del Lab asigna los roles internos y una sede existente:
    ```bash
-   make grupo EMAIL=admin@mail.com       GRUPO=administradores     # todo
+   make grupo EMAIL=portero@example.com GRUPO=porteros SEDE=1
+   make grupo EMAIL=responsable@example.com GRUPO=responsables_sede SEDE=2
    ```
-   El usuario tiene que **salir y volver a ingresar** para que el grupo aparezca en su token.
-
-   **Primer ingreso (elegir rol):** un usuario sin grupo ve la pantalla `elegir-rol.html` y elige
-   *Transportista* (grupo `transportistas`) o *Administrador / personal de planta* (grupo
-   `administradores`: aprueba, rechaza, portería, reportes y auditoría). Flask (`POST /api/mi-rol`) le pide a la
-   Lambda `gestionar-usuarios` (fuera de la VPC, porque Cognito es público y ECS no tiene internet)
-   que lo agregue al grupo, y el sitio refresca la sesión para traer el token nuevo. Se elige una
-   sola vez y `administradores` no se puede elegir. **Decisión consciente:** cualquiera puede
-   elegir un rol con permisos; en producción el rol de personal quedaría pendiente hasta que lo
-   apruebe un administrador.
+   El script retira grupos anteriores y asigna un único rol. Luego el usuario vuelve a
+   iniciar sesión. El grupo anterior `administradores` no concede permisos.
+   Ver [Cognito y roles](docs/cognito-y-roles.md) para el workaround de clase,
+   los permisos, la migración de usuarios y las suscripciones de correo por sede.
 4. Flujo completo: el transportista crea una solicitud con PDF → el PDF sube directo a S3 →
    S3 avisa a `cola-documentos` → Lambda `validar-documento`. La API publica el evento en SNS →
    `cola-auditoria` (Lambda guarda el JSON en el bucket de auditoría) y `cola-notificaciones`
@@ -291,27 +286,26 @@ el `fmt -check`.
 | No se pueden crear roles IAM | ECS y Lambdas usan `LabRole` (`data.aws_iam_role.lab_role`). Sí se escriben políticas sobre los recursos (buckets, colas, KMS) |
 | No hay CloudFront ni HTTPS en el sitio | Cognito vuelve a API Gateway `/callback` (HTTPS) y la Lambda redirige al sitio con los tokens en el `#` |
 | Las tasks no tienen salida a internet | VPC Endpoints. Las llaves públicas de Cognito (JWKS) las lee Terraform (`data.http`) y se pasan al contenedor como variable de entorno |
-| SES: el LabRole no tiene `ses:VerifyEmailIdentity`, y en sandbox SES solo manda a direcciones verificadas | Los avisos salen por **SNS por mail**: tópico `notificaciones-mail` + una suscripción por persona (`notificaciones_suscriptores`). Cada una confirma con el link que manda AWS. La Lambda publica con el atributo `destinatario` y la *filter policy* de cada suscripción hace que cada uno reciba solo lo suyo (el personal recibe además las solicitudes nuevas). En producción se volvería a SES con el dominio verificado |
+| SES: el LabRole no tiene `ses:VerifyEmailIdentity`, y en sandbox SES solo manda a direcciones verificadas | Los avisos salen por **SNS por mail**: tópico `notificaciones-mail` + una suscripción por persona (`notificaciones_suscriptores`). Cada una confirma con el link que manda AWS. La Lambda publica con el atributo `destinatario` y la *filter policy* de cada suscripción hace que cada uno reciba solo lo suyo (cada responsable recibe además las solicitudes nuevas de su sede). En producción se volvería a SES con el dominio verificado |
 | CloudTrail | El historial de 90 días existe siempre; el trail propio queda detrás de `enable_cloudtrail` |
 | Se destruye y recrea seguido | `force_destroy` en buckets, `recovery_window_in_days = 0` en secretos, `skip_final_snapshot` fuera de prod |
 
 ## 10. La aplicación
 
-- **`backend/`** — API Flask (JSON) que corre en ECS. Se conecta a RDS con las variables que
-  inyecta la task definition (la contraseña sale de Secrets Manager), valida el token de Cognito
-  (firma, emisor, cliente, vencimiento) con las llaves que Terraform le pasa en `COGNITO_JWKS`, y
-  autoriza por grupo: `transportistas` (cargan solicitudes y documentación) y `administradores`
-  (aprueban/rechazan, portería, ingreso/egreso, reportes y auditoría); sin grupo = elige rol.
-  Genera presigned URLs para subir y ver los PDFs (clave `empresas/{empresa}/solicitudes/{id}/...`)
-  y publica los eventos en SNS. Sin `DB_HOST` ni `COGNITO_JWKS` corre en local con SQLite y sin login.
-- **`frontend/`** — HTML/CSS/JS sin build. En AWS el login es con la Hosted UI de Cognito y el rol
-  sale del grupo del token; en local (sin `config.js`) queda el selector de rol de la v3.
+- **`backend/`** — Flask en ECS con PostgreSQL y credenciales de Secrets Manager.
+  Valida el Access Token y consulta el perfil/grupos vigentes mediante `gestionar-usuarios`.
+  Autoriza tres roles: transportistas (solicitudes propias), porteros (ingresos/egresos
+  de su sede) y responsables_sede (aprobaciones, reportes y auditoría de su sede).
+  Los roles internos solo los asigna el operador AWS. El modo local requiere `LOCAL_DEMO=true`.
+- **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase,
+  guarda Access Token e ID Token en sessionStorage y usa solo el primero para la API.
+  Ver [guía de Cognito y roles](docs/cognito-y-roles.md).
 - **Lambdas** — `validar-documento`, `vencer-permisos` y `generar-reporte` tienen la parte de RDS
   simulada (mock data, permitido por la consigna); el reporte CSV hoy lo genera la API.
 
 ### Probar en local (sin AWS)
 ```bash
-cd backend && pip3 install -r requirements.txt && python3 app.py     # terminal 1
+cd backend && pip3 install -r requirements.txt && LOCAL_DEMO=true python3 app.py     # terminal 1
 cd frontend && python3 -m http.server 8000                           # terminal 2
 # abrir http://localhost:8000/login.html
 ```

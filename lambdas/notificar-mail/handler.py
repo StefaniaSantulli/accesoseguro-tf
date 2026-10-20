@@ -7,7 +7,7 @@ identidades de SES (ses:VerifyEmailIdentity) y SES en sandbox solo manda a
 direcciones verificadas. Ahora publica en el tópico SNS "notificaciones-mail",
 al que cada persona se suscribe por mail. El atributo "destinatario" y la
 filter policy de cada suscripción deciden quién recibe cada aviso:
-- solicitud_creada                     -> "personal" (responsables de sede)
+- solicitud_creada                     -> "responsable-sede-<id>" (responsables de esa sede)
 - solicitud_aprobada/rechazada/vencida -> el mail del transportista
 """
 import json
@@ -41,8 +41,16 @@ def lambda_handler(event, context):
                 print(json.dumps({"level": "WARN", "msg": "NOTIFICACIONES_TOPIC_ARN vacío, no se envía"}))
                 continue
 
-            # Solicitud nueva -> al personal; el resto -> al transportista.
-            destinatario = (evento.get("destinatario_email") or "personal").strip().lower()
+            # No enviar avisos de una sede a responsables de otras sedes.
+            if tipo == "solicitud_creada":
+                sede_id = int(evento["sede_id"])
+                if sede_id <= 0:
+                    raise ValueError("sede_id inválido")
+                destinatario = f"responsable-sede-{sede_id}"
+            else:
+                destinatario = (evento.get("destinatario_email") or "").strip().lower()
+                if not destinatario:
+                    raise ValueError("El evento no identifica al destinatario")
 
             asunto, cuerpo = PLANTILLAS[tipo]
             texto = cuerpo.format(

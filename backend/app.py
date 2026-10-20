@@ -6,8 +6,8 @@ Cambios respecto a la versión v3 local:
   DB_HOST, usa SQLite local (para probar en la compu).
 - Autenticación: Cognito. Flask valida el token (firma, emisor, cliente y
   vencimiento) con las llaves públicas que Terraform le pasa en COGNITO_JWKS.
-  Autorización: según el grupo del usuario (cognito:groups). Sin COGNITO_JWKS
-  (modo local) la autenticación queda desactivada.
+  Autorización: access token, grupos de Cognito y sede asignada por el operador.
+  La demostración sin Cognito requiere LOCAL_DEMO=true y no admite DB_HOST/APP_ENV.
 - Documentos: el navegador sube el PDF directo a S3 con una presigned URL
   (no pasa por la API). La clave va por empresa:
   empresas/{empresa}/solicitudes/{id}/documento-{uuid}.pdf
@@ -28,7 +28,7 @@ from urllib.parse import quote_plus
 import boto3
 import jwt
 from botocore.config import Config
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, abort, g, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 
@@ -40,7 +40,7 @@ MAX_PDF_SIZE_MB = int(os.environ.get("MAX_PDF_SIZE_MB", "10"))
 # Bucket de documentos (lo inyecta Terraform como DOCS_BUCKET).
 BUCKET_NAME = os.environ.get("DOCS_BUCKET") or os.environ.get("BUCKET_NAME", "accesoseguro-documentos-local")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
-# Lambda que asigna el grupo de Cognito cuando el usuario elige su rol.
+# Lambda fuera de la VPC: consulta el perfil y habilita el alta de transportistas.
 ROLES_LAMBDA_NAME = os.environ.get("ROLES_LAMBDA_NAME", "")
 
 # s3v4 es obligatorio para presigned URLs de objetos cifrados con KMS.
@@ -55,7 +55,7 @@ FRONTEND_ORIGIN = os.environ.get("CORS_ALLOWED_ORIGIN") or os.environ.get("FRONT
 CORS(
     app,
     resources={r"/api/*": {"origins": FRONTEND_ORIGIN}},
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Demo-Role", "X-Demo-Sede"],
 )
 
 
@@ -149,6 +149,12 @@ class Solicitud(db.Model):
         return data
 
 
+class AuditoriaSede(db.Model):
+    """Asocia los nuevos logs a una sede sin alterar la tabla histórica existente."""
+    log_id = db.Column(db.Integer, db.ForeignKey("log_auditoria.id"), primary_key=True)
+    sede_id = db.Column(db.Integer, db.ForeignKey("sede.id"), nullable=False, index=True)
+
+
 _BASE_LISTA = False
 
 
@@ -183,16 +189,19 @@ COGNITO_JWKS = os.environ.get("COGNITO_JWKS", "")
 COGNITO_ISSUER = os.environ.get("COGNITO_ISSUER", "")
 COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
 AUTH_ENABLED = bool(COGNITO_JWKS)
+LOCAL_DEMO = os.environ.get("LOCAL_DEMO", "").lower() == "true"
+if LOCAL_DEMO and (os.environ.get("DB_HOST") or os.environ.get("APP_ENV")):
+    raise RuntimeError("LOCAL_DEMO solo se permite fuera del despliegue AWS")
+if not AUTH_ENABLED and not LOCAL_DEMO:
+    raise RuntimeError("Falta COGNITO_JWKS; para una demo local usar LOCAL_DEMO=true")
 _JWKS = jwt.PyJWKSet.from_json(COGNITO_JWKS) if AUTH_ENABLED else None
 
-# Dos roles: transportistas (crean solicitudes) y administradores (el personal
-# de planta: aprueban, rechazan, controlan la portería, ven reportes y auditoría).
-GRUPO_ADMIN = "administradores"
-GRUPOS_RESPONSABLE = {GRUPO_ADMIN}
-GRUPOS_PORTERIA = {GRUPO_ADMIN}
+GRUPOS_TRANSPORTISTA = {"transportistas"}
+GRUPOS_RESPONSABLE = {"responsables_sede"}
+GRUPOS_PORTERIA = {"porteros"}
 GRUPOS_PERSONAL = GRUPOS_RESPONSABLE | GRUPOS_PORTERIA
-# Roles que el usuario puede elegir solo, la primera vez que entra.
-ROLES_ELEGIBLES = {"transportistas", GRUPO_ADMIN}
+GRUPOS_APLICACION = GRUPOS_TRANSPORTISTA | GRUPOS_PERSONAL
+ROLES_ELEGIBLES = GRUPOS_TRANSPORTISTA
 
 
 def _validar_token(token):
@@ -204,12 +213,31 @@ def _validar_token(token):
         token,
         clave.key,
         algorithms=["RS256"],
-        audience=COGNITO_CLIENT_ID,
         issuer=COGNITO_ISSUER,
+        # El access token de Cognito identifica al app client con client_id.
+        options={"verify_aud": False, "require": ["exp", "iat", "sub", "username", "token_use", "client_id"]},
     )
-    if claims.get("token_use") != "id":
-        raise jwt.InvalidTokenError("se esperaba un id token")
+    if claims["token_use"] != "access" or claims["client_id"] != COGNITO_CLIENT_ID:
+        raise jwt.InvalidTokenError("se esperaba un access token de este cliente")
     return claims
+
+
+def gestionar_usuario(accion, **datos):
+    """La identidad procede del token verificado, nunca del JSON del navegador."""
+    try:
+        respuesta = lambda_client.invoke(
+            FunctionName=ROLES_LAMBDA_NAME,
+            Payload=json.dumps({"accion": accion, **datos}).encode(),
+        )
+        if respuesta.get("FunctionError"):
+            raise ValueError("Error de Lambda")
+        resultado = json.loads(respuesta["Payload"].read())
+        if not isinstance(resultado, dict):
+            raise ValueError("Respuesta inválida")
+        return resultado
+    except Exception:
+        app.logger.exception("No se pudo consultar la identidad en Cognito")
+        abort(503, description="No se pudo consultar el perfil de usuario")
 
 
 def requiere_login(grupos=None):
@@ -218,27 +246,40 @@ def requiere_login(grupos=None):
     def decorador(fn):
         @wraps(fn)
         def envoltura(*args, **kwargs):
-            if not AUTH_ENABLED:  # modo local: sin Cognito
-                g.usuario = {"email": "local@accesoseguro", "username": "local", "grupos": list(GRUPOS_PERSONAL), "empresa_id": None}
-                return fn(*args, **kwargs)
-
-            cabecera = request.headers.get("Authorization", "")
-            if not cabecera.startswith("Bearer "):
-                return jsonify({"error": "Falta el token"}), 401
-            try:
-                claims = _validar_token(cabecera[7:])
-            except jwt.PyJWTError as exc:
-                return jsonify({"error": f"Token inválido: {exc}"}), 401
-
-            g.usuario = {
-                "email": claims.get("email"),
-                "username": claims.get("cognito:username"),
-                "grupos": claims.get("cognito:groups", []),
-                "empresa_id": claims.get("custom:empresa_id"),
-                "sede_id": claims.get("custom:sede_id"),
-            }
+            if not AUTH_ENABLED:  # solo demostración local explícita
+                rol = request.headers.get("X-Demo-Role", "")
+                g.usuario = {"sub": "local", "email": "local@accesoseguro", "username": "local",
+                             "grupos": [rol] if rol in GRUPOS_APLICACION else [], "empresa_id": None,
+                             "sede_id": request.headers.get("X-Demo-Sede", "1")}
+            else:
+                cabecera = request.headers.get("Authorization", "")
+                if not cabecera.startswith("Bearer "):
+                    return jsonify({"error": "Falta el access token"}), 401
+                try:
+                    claims = _validar_token(cabecera[7:])
+                except (jwt.PyJWTError, ValueError, TypeError):
+                    return jsonify({"error": "Access token inválido"}), 401
+                perfil = gestionar_usuario("perfil", username=claims["username"], sub=claims["sub"])
+                if not perfil.get("ok"):
+                    return jsonify({"error": "Usuario inhabilitado o perfil no verificado"}), 403
+                grupos_token = set(claims.get("cognito:groups", []))
+                grupos_actuales = set(perfil.get("grupos", []))
+                if grupos_token & GRUPOS_APLICACION != grupos_actuales & GRUPOS_APLICACION:
+                    return jsonify({"error": "Tu rol cambió; volvé a iniciar sesión"}), 403
+                g.usuario = {**perfil["usuario"], "username": claims["username"], "sub": claims["sub"],
+                             "grupos": claims.get("cognito:groups", [])}
+            roles = set(g.usuario["grupos"]) & GRUPOS_APLICACION
+            if len(roles) > 1 or "administradores" in g.usuario["grupos"]:
+                return jsonify({"error": "El operador debe asignarte un único rol de la aplicación"}), 403
             if grupos and not set(g.usuario["grupos"]) & set(grupos):
                 return jsonify({"error": "No tenés permiso para esta acción"}), 403
+            if roles & GRUPOS_PERSONAL:
+                try:
+                    g.usuario["sede_id"] = int(g.usuario.get("sede_id"))
+                except (ValueError, TypeError):
+                    return jsonify({"error": "El operador debe asignarte una sede"}), 403
+                if not db.session.get(Sede, g.usuario["sede_id"]):
+                    return jsonify({"error": "La sede asignada no existe"}), 403
             return fn(*args, **kwargs)
 
         return envoltura
@@ -248,6 +289,17 @@ def requiere_login(grupos=None):
 
 def es_personal():
     return bool(set(g.usuario["grupos"]) & GRUPOS_PERSONAL)
+
+
+def solicitudes_de_sede():
+    return Solicitud.query.filter_by(sede_id=g.usuario["sede_id"])
+
+
+def solicitud_de_sede(id):
+    solicitud = solicitudes_de_sede().filter_by(id=id).first()
+    if solicitud is None:
+        abort(404)
+    return solicitud
 
 
 # -----------------------------------------------------------------------------
@@ -261,8 +313,12 @@ def generar_url_documento(key, expiracion=PRESIGNED_URL_TTL):
     )
 
 
-def auditar(accion, detalle):
-    db.session.add(LogAuditoria(accion=accion, detalle=detalle, usuario=g.get("usuario", {}).get("email")))
+def auditar(accion, detalle, sede_id=None):
+    log = LogAuditoria(accion=accion, detalle=detalle, usuario=g.get("usuario", {}).get("email"))
+    db.session.add(log)
+    if sede_id is not None:
+        db.session.flush()
+        db.session.add(AuditoriaSede(log_id=log.id, sede_id=sede_id))
 
 
 def publicar_evento(solicitud, tipo, destinatario=None):
@@ -278,6 +334,7 @@ def publicar_evento(solicitud, tipo, destinatario=None):
                 "solicitud_id": solicitud.id,
                 "estado": solicitud.estado,
                 "sede": solicitud.sede.nombre if solicitud.sede else None,
+                "sede_id": solicitud.sede_id,
                 "empresa": solicitud.empresa,
                 "destinatario_email": destinatario,
                 "motivo": solicitud.motivo_decision,
@@ -303,13 +360,23 @@ def health():
     return jsonify({"status": "ok", "service": "accesoseguro-api"})
 
 
+@app.errorhandler(403)
+@app.errorhandler(404)
+@app.errorhandler(503)
+def error_api(error):
+    return jsonify({"error": error.description}), error.code
+
+
 # -----------------------------------------------------------------------------
 # Datos comunes
 # -----------------------------------------------------------------------------
 @app.route("/api/sedes")
 @requiere_login()
 def listar_sedes():
-    return jsonify([s.to_dict() for s in Sede.query.all()])
+    query = Sede.query
+    if es_personal():
+        query = query.filter_by(id=g.usuario["sede_id"])
+    return jsonify([s.to_dict() for s in query.all()])
 
 
 @app.route("/api/me")
@@ -321,12 +388,7 @@ def quien_soy():
 @app.route("/api/mi-rol", methods=["POST"])
 @requiere_login()
 def elegir_rol():
-    """El usuario elige su rol la primera vez que entra (una sola vez).
-
-    Flask no tiene salida a internet: le pide a la Lambda gestionar-usuarios
-    (fuera de la VPC) que lo agregue al grupo de Cognito. El grupo recién
-    aparece en el token cuando el usuario vuelve a ingresar.
-    """
+    """Solo permite el alta como transportista. El personal lo asigna el operador."""
     data = request.get_json(silent=True) or {}
     grupo = data.get("grupo")
     if grupo not in ROLES_ELEGIBLES:
@@ -336,15 +398,7 @@ def elegir_rol():
     if not AUTH_ENABLED:  # modo local: no hay Cognito
         return jsonify({"ok": True, "grupo": grupo})
 
-    respuesta = lambda_client.invoke(
-        FunctionName=ROLES_LAMBDA_NAME,
-        Payload=json.dumps({
-            "username": g.usuario["username"],
-            "email": g.usuario.get("email"),
-            "grupo": grupo,
-        }).encode(),
-    )
-    resultado = json.loads(respuesta["Payload"].read() or b"{}")
+    resultado = gestionar_usuario("alta_transportista", username=g.usuario["username"], sub=g.usuario["sub"], grupo=grupo)
     if not resultado.get("ok"):
         return jsonify({"error": resultado.get("error", "No se pudo asignar el rol")}), 409
 
@@ -357,7 +411,7 @@ def elegir_rol():
 # Transportista
 # -----------------------------------------------------------------------------
 @app.route("/api/solicitudes", methods=["POST"])
-@requiere_login()
+@requiere_login(GRUPOS_TRANSPORTISTA)
 def crear_solicitud():
     data = request.get_json(silent=True) or request.form
     nueva = Solicitud(
@@ -371,7 +425,7 @@ def crear_solicitud():
     )
     db.session.add(nueva)
     db.session.flush()  # para tener el id
-    auditar("Nueva solicitud", f"Solicitud #{nueva.id} ({nueva.nombre_solicitante}) - sede {nueva.sede_id}")
+    auditar("Nueva solicitud", f"Solicitud #{nueva.id} ({nueva.nombre_solicitante}) - sede {nueva.sede_id}", nueva.sede_id)
     db.session.commit()  # la solicitud y su auditoría, en la misma transacción
 
     publicar_evento(nueva, "solicitud_creada")
@@ -379,11 +433,11 @@ def crear_solicitud():
 
 
 @app.route("/api/solicitudes/<int:id>/documento", methods=["POST"])
-@requiere_login()
+@requiere_login(GRUPOS_TRANSPORTISTA)
 def url_subida_documento(id):
     """Devuelve una presigned URL para que el navegador suba el PDF directo a S3."""
     solicitud = db.get_or_404(Solicitud, id)
-    if not es_personal() and solicitud.email_solicitante != g.usuario.get("email"):
+    if solicitud.email_solicitante != g.usuario.get("email"):
         return jsonify({"error": "La solicitud no es tuya"}), 403
 
     empresa = g.usuario.get("empresa_id") or solicitud.empresa
@@ -394,24 +448,17 @@ def url_subida_documento(id):
         ExpiresIn=PRESIGNED_URL_TTL,
     )
     solicitud.documento_s3_key = key
-    auditar("Carga de documentación", f"Solicitud #{solicitud.id} - {key}")
+    auditar("Carga de documentación", f"Solicitud #{solicitud.id} - {key}", solicitud.sede_id)
     db.session.commit()
     return jsonify({"url": url, "key": key, "max_mb": MAX_PDF_SIZE_MB})
 
 
 @app.route("/api/mis-solicitudes")
-@requiere_login()
+@requiere_login(GRUPOS_TRANSPORTISTA)
 def mis_solicitudes():
     dni = (request.args.get("dni") or "").strip()
-    query = Solicitud.query
-    if AUTH_ENABLED and not es_personal():
-        # Un transportista solo ve las suyas (las de su usuario).
-        query = query.filter_by(email_solicitante=g.usuario.get("email"))
-        if dni:
-            query = query.filter_by(dni=dni)
-    else:
-        if not dni:
-            return jsonify({"error": "Falta el parámetro dni"}), 400
+    query = Solicitud.query.filter_by(email_solicitante=g.usuario["email"])
+    if dni:
         query = query.filter_by(dni=dni)
     return jsonify([s.to_dict() for s in query.order_by(Solicitud.fecha_creacion.desc()).all()])
 
@@ -422,14 +469,14 @@ def mis_solicitudes():
 @app.route("/api/solicitudes/pendientes")
 @requiere_login(GRUPOS_RESPONSABLE)
 def solicitudes_pendientes():
-    pendientes = Solicitud.query.filter_by(estado="pendiente").all()
+    pendientes = solicitudes_de_sede().filter_by(estado="pendiente").all()
     return jsonify([s.to_dict(incluir_url_documento=True) for s in pendientes])
 
 
 @app.route("/api/solicitudes/<int:id>/resolver", methods=["POST"])
 @requiere_login(GRUPOS_RESPONSABLE)
 def resolver_solicitud(id):
-    solicitud = db.get_or_404(Solicitud, id)
+    solicitud = solicitud_de_sede(id)
     data = request.get_json(silent=True) or request.form
     accion = data.get("accion")
     motivo = data.get("motivo_decision", "")
@@ -446,7 +493,7 @@ def resolver_solicitud(id):
     auditar(
         "Aprobación" if accion == "aprobada" else "Rechazo",
         f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante}) - {accion}"
-        + (f" - Motivo: {motivo}" if motivo else ""),
+        + (f" - Motivo: {motivo}" if motivo else ""), solicitud.sede_id,
     )
     db.session.commit()
 
@@ -457,14 +504,16 @@ def resolver_solicitud(id):
 @app.route("/api/solicitudes")
 @requiere_login(GRUPOS_PERSONAL)
 def listar_solicitudes():
-    solicitudes = Solicitud.query.order_by(Solicitud.fecha_creacion.desc()).all()
+    solicitudes = solicitudes_de_sede().order_by(Solicitud.fecha_creacion.desc()).all()
     return jsonify([s.to_dict() for s in solicitudes])
 
 
 @app.route("/api/auditoria")
 @requiere_login(GRUPOS_RESPONSABLE)
 def ver_auditoria():
-    logs = LogAuditoria.query.order_by(LogAuditoria.fecha.desc()).all()
+    logs = LogAuditoria.query.join(AuditoriaSede, AuditoriaSede.log_id == LogAuditoria.id).filter(
+        AuditoriaSede.sede_id == g.usuario["sede_id"]
+    ).order_by(LogAuditoria.fecha.desc()).all()
     return jsonify([l.to_dict() for l in logs])
 
 
@@ -483,9 +532,10 @@ def exportar_reporte():
     except ValueError:
         return jsonify({"error": "Las fechas tienen que tener el formato AAAA-MM-DD"}), 400
 
-    query = Solicitud.query
+    query = solicitudes_de_sede()
     if sede_id:
-        query = query.filter_by(sede_id=int(sede_id))
+        if sede_id != str(g.usuario["sede_id"]):
+            return jsonify({"error": "No tenés permiso para esa sede"}), 403
     if fecha_desde:
         query = query.filter(Solicitud.fecha_creacion >= fecha_desde)
     if fecha_hasta:
@@ -518,7 +568,7 @@ def verificacion():
     if not busqueda:
         return jsonify({"error": "Falta el parámetro busqueda"}), 400
 
-    resultado = Solicitud.query.filter(
+    resultado = solicitudes_de_sede().filter(
         Solicitud.estado == "aprobada",
         (Solicitud.dni == busqueda) | (Solicitud.patente == busqueda),
     ).first()
@@ -531,9 +581,11 @@ def verificacion():
 @app.route("/api/solicitudes/<int:id>/ingreso", methods=["POST"])
 @requiere_login(GRUPOS_PORTERIA)
 def registrar_ingreso(id):
-    solicitud = db.get_or_404(Solicitud, id)
+    solicitud = solicitud_de_sede(id)
+    if solicitud.estado != "aprobada":
+        return jsonify({"error": "La solicitud no está aprobada"}), 409
     solicitud.hora_ingreso = datetime.utcnow()
-    auditar("Registro de ingreso", f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante})")
+    auditar("Registro de ingreso", f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante})", solicitud.sede_id)
     db.session.commit()
     return jsonify(solicitud.to_dict())
 
@@ -541,9 +593,11 @@ def registrar_ingreso(id):
 @app.route("/api/solicitudes/<int:id>/egreso", methods=["POST"])
 @requiere_login(GRUPOS_PORTERIA)
 def registrar_egreso(id):
-    solicitud = db.get_or_404(Solicitud, id)
+    solicitud = solicitud_de_sede(id)
+    if solicitud.hora_ingreso is None:
+        return jsonify({"error": "Primero debe registrarse el ingreso"}), 409
     solicitud.hora_egreso = datetime.utcnow()
-    auditar("Registro de egreso", f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante})")
+    auditar("Registro de egreso", f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante})", solicitud.sede_id)
     db.session.commit()
     return jsonify(solicitud.to_dict())
 
@@ -555,7 +609,7 @@ def registrar_egreso(id):
 @requiere_login(GRUPOS_RESPONSABLE)
 def expirar_vencidas():
     limite = datetime.utcnow() - timedelta(seconds=SEGUNDOS_VENCIMIENTO)
-    vencidas = Solicitud.query.filter(
+    vencidas = solicitudes_de_sede().filter(
         Solicitud.estado == "aprobada",
         Solicitud.hora_ingreso.is_(None),
         Solicitud.fecha_aprobacion.isnot(None),
@@ -564,7 +618,7 @@ def expirar_vencidas():
 
     for s in vencidas:
         s.estado = "vencida"
-        auditar("Expiración automática", f"Solicitud #{s.id} ({s.nombre_solicitante}) - vencida")
+        auditar("Expiración automática", f"Solicitud #{s.id} ({s.nombre_solicitante}) - vencida", s.sede_id)
     db.session.commit()
     for s in vencidas:
         publicar_evento(s, "permiso_vencido", destinatario=s.email_solicitante)

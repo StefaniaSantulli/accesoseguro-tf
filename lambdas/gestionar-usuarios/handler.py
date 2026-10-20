@@ -1,16 +1,8 @@
-"""gestionar-usuarios: asigna el rol que el usuario eligió en su primer ingreso.
+"""Perfil confiable y alta como transportista; no permite autoasignar personal.
 
-La invoca Flask (por el VPC Endpoint de Lambda) cuando un usuario elige su rol.
-Corre fuera de la VPC porque Cognito es un servicio público y las tasks de ECS
-no tienen salida a internet. Hace dos cosas:
-
-1. Lo agrega al grupo de Cognito que eligió (transportistas o
-   administradores), solo si todavía no tiene grupo: el rol se elige una vez.
-2. Suscribe su mail al tópico SNS de notificaciones, con la filter policy de
-   su rol, para que los avisos le lleguen solos:
-   - transportistas  -> los avisos dirigidos a su mail (aprobada, rechazada...)
-   - administradores -> además los dirigidos a "personal" (solicitud nueva)
-   AWS le manda un mail para confirmar la suscripción.
+Flask invoca esta Lambda fuera de la VPC con el username/sub del access token
+ya verificado. Cognito conserva email, sede y empresa. Solo el operador AWS
+asigna porteros/responsables_sede; estos grupos no son roles IAM.
 """
 import json
 import os
@@ -20,45 +12,51 @@ import boto3
 cognito = boto3.client("cognito-idp")
 sns = boto3.client("sns")
 USER_POOL_ID = os.environ["USER_POOL_ID"]
-GRUPOS_PERMITIDOS = set(os.environ.get("GRUPOS_PERMITIDOS", "").split(","))
 TOPIC_ARN = os.environ.get("NOTIFICACIONES_TOPIC_ARN", "")
-GRUPOS_PERSONAL = {"administradores"}
 
 
-def _suscribir(email, grupo):
-    destinatarios = [email.lower()] + (["personal"] if grupo in GRUPOS_PERSONAL else [])
-    sns.subscribe(
-        TopicArn=TOPIC_ARN,
-        Protocol="email",
-        Endpoint=email,
-        Attributes={
-            "FilterPolicyScope": "MessageAttributes",
-            "FilterPolicy": json.dumps({"destinatario": destinatarios}),
-        },
-    )
+def _perfil(username, sub):
+    usuario = cognito.admin_get_user(UserPoolId=USER_POOL_ID, Username=username)
+    atributos = {a["Name"]: a["Value"] for a in usuario["UserAttributes"]}
+    if not usuario.get("Enabled") or atributos.get("sub") != sub:
+        return None
+    if atributos.get("email_verified") != "true" or not atributos.get("email"):
+        return None
+    return {
+        "email": atributos["email"],
+        "empresa_id": atributos.get("custom:empresa_id"),
+        "sede_id": atributos.get("custom:sede_id"),
+    }
 
 
 def lambda_handler(event, context):
-    username = event.get("username")
-    email = event.get("email")
-    grupo = event.get("grupo")
+    accion = event.get("accion")
+    username, sub = event.get("username"), event.get("sub")
+    if not username or not sub or accion not in {"perfil", "alta_transportista"}:
+        return {"ok": False, "error": "Operación no permitida"}
+    if accion == "alta_transportista" and event.get("grupo") != "transportistas":
+        return {"ok": False, "error": "Solo se permite el alta como transportista"}
 
-    if not username or grupo not in GRUPOS_PERMITIDOS:
-        return {"ok": False, "error": "Rol no permitido"}
-
+    perfil = _perfil(username, sub)
+    if perfil is None:
+        return {"ok": False, "error": "Perfil no verificado o usuario inhabilitado"}
     actuales = cognito.admin_list_groups_for_user(UserPoolId=USER_POOL_ID, Username=username)["Groups"]
-    if actuales:
-        return {"ok": False, "error": "El usuario ya tiene un rol asignado"}
+    if accion == "perfil":
+        return {"ok": True, "usuario": perfil, "grupos": [grupo["GroupName"] for grupo in actuales]}
 
-    cognito.admin_add_user_to_group(UserPoolId=USER_POOL_ID, Username=username, GroupName=grupo)
+    if actuales:
+        return {"ok": False, "error": "El usuario ya tiene un grupo; consultá al operador"}
+    cognito.admin_add_user_to_group(UserPoolId=USER_POOL_ID, Username=username, GroupName="transportistas")
 
     suscripto = False
-    if TOPIC_ARN and email:
+    if TOPIC_ARN:
         try:
-            _suscribir(email, grupo)
+            sns.subscribe(
+                TopicArn=TOPIC_ARN, Protocol="email", Endpoint=perfil["email"],
+                Attributes={"FilterPolicyScope": "MessageAttributes",
+                            "FilterPolicy": json.dumps({"destinatario": [perfil["email"].lower()]})},
+            )
             suscripto = True
-        except Exception as exc:  # el rol ya quedó asignado: no se revierte por esto
-            print(json.dumps({"level": "ERROR", "msg": "suscripcion_sns", "error": str(exc)}))
-
-    print(json.dumps({"level": "INFO", "msg": "rol_asignado", "username": username, "grupo": grupo, "suscripto": suscripto}))
-    return {"ok": True, "grupo": grupo, "suscripto": suscripto}
+        except Exception:
+            print(json.dumps({"level": "ERROR", "msg": "suscripcion_sns_pendiente"}))
+    return {"ok": True, "grupo": "transportistas", "suscripto": suscripto}

@@ -216,13 +216,12 @@ locals {
       }
     }
     gestionar-usuarios = {
-      description = "Agrega al usuario al grupo de Cognito que eligio en su primer ingreso"
+      description = "Consulta el perfil de Cognito y habilita altas como transportista"
       timeout     = 10
       memory_size = 128
       in_vpc      = false
       environment = {
         USER_POOL_ID             = aws_cognito_user_pool.main.id
-        GRUPOS_PERMITIDOS        = "transportistas,administradores"
         NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
       }
     }
@@ -241,11 +240,14 @@ locals {
   # ---------------------------------------------------------------------------
   # Cognito
   # ---------------------------------------------------------------------------
-  # Dos roles: transportistas (crean solicitudes) y administradores (personal
-  # de planta: aprueban, rechazan, portería, reportes y auditoría).
+  # Tres roles de aplicación. No se asignan roles IAM a los usuarios.
+  # El grupo anterior se conserva para migrar usuarios sin borrar membresías;
+  # Flask no le otorga permisos. El operador debe reasignar cada usuario.
   cognito_groups = {
-    transportistas  = { precedence = 20, description = "Cargan solicitudes de acceso y suben su documentacion" }
-    administradores = { precedence = 1, description = "Personal de planta: aprueban, controlan la porteria y ven reportes" }
+    transportistas    = { precedence = 20, description = "Cargan solicitudes de acceso y suben su documentacion" }
+    porteros          = { precedence = 10, description = "Verifican y registran ingresos y egresos en su sede" }
+    responsables_sede = { precedence = 5, description = "Aprueban solicitudes y consultan reportes y auditoria de su sede" }
+    administradores   = { precedence = 99, description = "LEGADO sin permisos en la aplicacion; migrar a uno de los tres grupos" }
   }
 
   cognito_domain_prefix = format("%s-%s", local.name_prefix, local.account_id)

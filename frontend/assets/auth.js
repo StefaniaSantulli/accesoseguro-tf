@@ -1,150 +1,137 @@
-// Autenticación y roles.
-//
-// En AWS (config.js existe): login real con la Hosted UI de Cognito. Al
-// volver, la Lambda auth-callback deja los tokens después del "#" en la URL;
-// se guardan en sessionStorage y se limpia la URL. El rol sale de los grupos
-// del usuario (cognito:groups), y el backend vuelve a validar el token y el
-// grupo en cada pedido: esto del front solo decide qué pantallas mostrar.
-//
-// En local (sin config.js): se mantiene el selector de rol de la v3.
-
-const ROLES = { CONDUCTOR: "conductor", ADMIN: "admin", SIN_ROL: "sin_rol" };
-// Dos roles: transportistas y administradores (personal de planta).
-const GRUPOS_RESPONSABLE = ["administradores"];
-const GRUPOS_PORTERIA = ["administradores"];
-const GRUPO_TRANSPORTISTA = "transportistas";
+// Workaround de clase: Cognito -> API Gateway /callback -> Lambda -> S3.
+// El access token autoriza la API; el ID token solo muestra el perfil en pantalla.
+const ROLES = { TRANSPORTISTA: "transportistas", PORTERO: "porteros", RESPONSABLE: "responsables_sede", SIN_ROL: "sin_rol", INVALIDO: "invalido" };
+const GRUPOS_RESPONSABLE = [ROLES.RESPONSABLE];
+const GRUPOS_PORTERIA = [ROLES.PORTERO];
+const GRUPOS_VALIDOS = [ROLES.TRANSPORTISTA, ROLES.PORTERO, ROLES.RESPONSABLE];
 
 function isCognitoMode() {
   return !!(window.APP_CONFIG && window.APP_CONFIG.loginUrl);
 }
-
 function storageGet(store, key) {
   try { return store.getItem(key); } catch (e) { return null; }
 }
 function storageSet(store, key, value) {
-  try { store.setItem(key, value); } catch (e) { /* sin storage, seguimos */ }
+  try { store.setItem(key, value); return true; } catch (e) { return false; }
 }
 function storageDel(store, key) {
   try { store.removeItem(key); } catch (e) {}
 }
-
-// --- Tokens de Cognito ------------------------------------------------------
-(function capturarTokensDeLaUrl() {
-  if (!location.hash.includes("id_token=")) return;
-  const params = new URLSearchParams(location.hash.slice(1));
-  storageSet(sessionStorage, "accesoseguro_id_token", params.get("id_token"));
-  history.replaceState(null, "", location.pathname + location.search);
-})();
-
-function getToken() {
-  return isCognitoMode() ? storageGet(sessionStorage, "accesoseguro_id_token") : null;
+function limpiarTokens() {
+  storageDel(sessionStorage, "accesoseguro_access_token");
+  storageDel(sessionStorage, "accesoseguro_id_token");
 }
-
-function getClaims() {
-  const token = getToken();
+function leerClaims(token) {
   if (!token) return null;
   try {
     const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
     const claims = JSON.parse(decodeURIComponent(escape(atob(payload))));
-    if (claims.exp && claims.exp * 1000 < Date.now()) return null; // vencido
-    return claims;
-  } catch (e) {
-    return null;
-  }
+    return claims.exp && claims.exp * 1000 > Date.now() ? claims : null;
+  } catch (e) { return null; }
 }
 
+(function capturarTokensDeLaUrl() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (!params.has("access_token") && !params.has("id_token") && !params.has("error")) return;
+  const esperado = storageGet(sessionStorage, "accesoseguro_oauth_state");
+  history.replaceState(null, "", location.pathname + location.search);
+  limpiarTokens();
+  storageDel(sessionStorage, "accesoseguro_oauth_state");
+  const access = leerClaims(params.get("access_token"));
+  const id = leerClaims(params.get("id_token"));
+  if (!esperado || params.get("state") !== esperado || params.has("error") ||
+      !access || !id || access.token_use !== "access" || id.token_use !== "id" || access.sub !== id.sub) {
+    storageSet(sessionStorage, "accesoseguro_login_error", "No se pudo completar el ingreso. Volvé a iniciar sesión.");
+    return;
+  }
+  storageSet(sessionStorage, "accesoseguro_access_token", params.get("access_token"));
+  storageSet(sessionStorage, "accesoseguro_id_token", params.get("id_token"));
+})();
+
+function getToken() {
+  return isCognitoMode() ? storageGet(sessionStorage, "accesoseguro_access_token") : null;
+}
+function getClaims() {
+  return leerClaims(storageGet(sessionStorage, "accesoseguro_id_token"));
+}
 function getGroups() {
-  const claims = getClaims();
+  if (!isCognitoMode()) {
+    const rol = storageGet(localStorage, "accesoseguro_rol");
+    return GRUPOS_VALIDOS.includes(rol) ? [rol] : [];
+  }
+  const claims = leerClaims(getToken());
   return (claims && claims["cognito:groups"]) || [];
 }
-
 function hasAnyGroup(grupos) {
   return getGroups().some((g) => grupos.includes(g));
 }
-
-// --- Rol --------------------------------------------------------------------
 function getRole() {
-  if (isCognitoMode()) {
-    if (!getClaims()) return null;
-    if (hasAnyGroup([...GRUPOS_RESPONSABLE, ...GRUPOS_PORTERIA])) return ROLES.ADMIN;
-    if (hasAnyGroup([GRUPO_TRANSPORTISTA])) return ROLES.CONDUCTOR;
-    return ROLES.SIN_ROL; // primer ingreso: todavía no eligió su rol
-  }
-  return storageGet(localStorage, "accesoseguro_rol");
+  if (isCognitoMode() && !leerClaims(getToken())) return null;
+  const grupos = getGroups();
+  const roles = grupos.filter((g) => GRUPOS_VALIDOS.includes(g));
+  if (grupos.includes("administradores") || roles.length > 1) return ROLES.INVALIDO;
+  return roles[0] || (isCognitoMode() ? ROLES.SIN_ROL : null);
 }
-
 function setRole(rol) {
-  storageSet(localStorage, "accesoseguro_rol", rol);
+  if (GRUPOS_VALIDOS.includes(rol)) storageSet(localStorage, "accesoseguro_rol", rol);
 }
-
 function login() {
-  if (isCognitoMode()) window.location.href = window.APP_CONFIG.loginUrl;
+  if (!isCognitoMode()) return;
+  // getRandomValues funciona también en el frontend HTTP del Lab.
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const state = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  if (!storageSet(sessionStorage, "accesoseguro_oauth_state", state)) {
+    alert("Habilitá el almacenamiento de sesión del navegador para ingresar.");
+    return;
+  }
+  const url = new URL(window.APP_CONFIG.loginUrl);
+  url.searchParams.set("state", state);
+  window.location.href = url.toString();
 }
-
-// Vuelve a pasar por Cognito para traer un token nuevo (por ejemplo, con el
-// grupo recién asignado). Como la sesión de la Hosted UI sigue abierta, no
-// pide la contraseña de nuevo.
 function refrescarSesion() {
-  storageDel(sessionStorage, "accesoseguro_id_token");
+  limpiarTokens();
   login();
 }
-
 function logout() {
-  storageDel(sessionStorage, "accesoseguro_id_token");
+  limpiarTokens();
+  storageDel(sessionStorage, "accesoseguro_oauth_state");
   storageDel(localStorage, "accesoseguro_rol");
   window.location.href = "login.html";
 }
-
-// Redirige a login si no hay sesión, a elegir-rol si es el primer ingreso, o a
-// index si el rol no puede ver la página.
 function requireRole(rolesPermitidos) {
   const rol = getRole();
-  if (!rol) {
-    window.location.href = "login.html";
-    return null;
+  if (!rol) { window.location.href = "login.html"; return null; }
+  if ([ROLES.SIN_ROL, ROLES.INVALIDO].includes(rol)) {
+    window.location.href = "elegir-rol.html"; return null;
   }
-  if (rol === ROLES.SIN_ROL) {
-    window.location.href = "elegir-rol.html";
-    return null;
-  }
-  if (!rolesPermitidos.includes(rol)) {
-    window.location.href = "index.html";
-    return null;
-  }
+  if (!rolesPermitidos.includes(rol)) { window.location.href = "index.html"; return null; }
   return rol;
 }
 
-// --- Navegación ---------------------------------------------------------------
-const NAV_CONDUCTOR = [
-  { href: "nueva-solicitud.html", label: "Nueva solicitud" },
-  { href: "mis-solicitudes.html", label: "Mis solicitudes" },
-];
-
-// grupos: quién ve cada link en modo Cognito (en local se ven todos).
-const NAV_ADMIN = [
+const NAV = [
+  { href: "nueva-solicitud.html", label: "Nueva solicitud", grupos: [ROLES.TRANSPORTISTA] },
+  { href: "mis-solicitudes.html", label: "Mis solicitudes", grupos: [ROLES.TRANSPORTISTA] },
   { href: "panel-aprobacion.html", label: "Aprobación", grupos: GRUPOS_RESPONSABLE },
-  { href: "solicitudes.html", label: "Todas", grupos: [...GRUPOS_RESPONSABLE, ...GRUPOS_PORTERIA] },
-  { href: "verificacion.html", label: "Verificación", grupos: GRUPOS_PORTERIA },
+  { href: "solicitudes.html", label: "Solicitudes de mi sede", grupos: [...GRUPOS_RESPONSABLE, ...GRUPOS_PORTERIA] },
+  { href: "verificacion.html", label: "Portería", grupos: GRUPOS_PORTERIA },
   { href: "reporte.html", label: "Reporte", grupos: GRUPOS_RESPONSABLE },
   { href: "auditoria.html", label: "Auditoría", grupos: GRUPOS_RESPONSABLE },
 ];
-
 function linksVisibles() {
-  const rol = getRole();
-  if (rol !== ROLES.ADMIN) return NAV_CONDUCTOR;
-  return isCognitoMode() ? NAV_ADMIN.filter((l) => hasAnyGroup(l.grupos)) : NAV_ADMIN;
+  return NAV.filter((l) => hasAnyGroup(l.grupos));
 }
-
 function renderNav() {
   const nav = document.getElementById("nav-links");
   if (!nav) return;
+  nav.replaceChildren();
+  for (const link of linksVisibles()) {
+    const a = document.createElement("a");
+    a.href = link.href; a.textContent = link.label; nav.appendChild(a);
+  }
   const claims = getClaims();
   const quien = isCognitoMode() ? (claims && claims.email) : getRole();
-  const linksHtml = linksVisibles().map((l) => `<a href="${l.href}">${l.label}</a>`).join("");
-  const salirHtml = `<a href="#" id="link-salir">Salir${quien ? ` (${quien})` : ""}</a>`;
-  nav.innerHTML = linksHtml + salirHtml;
-  document.getElementById("link-salir").addEventListener("click", (e) => {
-    e.preventDefault();
-    logout();
-  });
+  const salir = document.createElement("a");
+  salir.href = "#"; salir.textContent = quien ? `Salir (${quien})` : "Salir";
+  salir.addEventListener("click", (e) => { e.preventDefault(); logout(); });
+  nav.appendChild(salir);
 }

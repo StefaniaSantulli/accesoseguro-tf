@@ -7,9 +7,9 @@ environment  = "dev"
 api_image_tag = "v1.1"
 
 # Notificaciones por mail con SNS (cada mail confirma la suscripción).
-# transportista = solo sus avisos · personal = además las solicitudes nuevas
+# transportista/portero = solo sus avisos; responsable-sede-N = solicitudes de su sede
 notificaciones_suscriptores = {
-  "responsable.prueba@gmail.com" = "personal"
+  "responsable.prueba@gmail.com" = "responsable-sede-1"
 }
 
 # Mail que recibe las alarmas (vacío = sin suscripción).

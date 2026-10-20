@@ -232,13 +232,13 @@ variable "documentos_lifecycle" {
 # Eventos y mails
 # =============================================================================
 variable "notificaciones_suscriptores" {
-  description = "Mail => rol (transportista: solo sus avisos; personal: además las solicitudes nuevas). Cada mail confirma la suscripción de SNS."
+  description = "Mail => destinatario: transportista o portero (solo sus avisos), responsable-sede-N (también solicitudes de la sede N). Confirmar el correo SNS."
   type        = map(string)
   default     = {}
 
   validation {
-    condition     = alltrue([for rol in values(var.notificaciones_suscriptores) : contains(["transportista", "personal"], rol)])
-    error_message = "Cada rol tiene que ser transportista o personal."
+    condition     = alltrue([for rol in values(var.notificaciones_suscriptores) : can(regex("^(transportista|portero|responsable-sede-[1-9][0-9]*)$", rol))])
+    error_message = "Usar transportista, portero o responsable-sede-N, con N como ID positivo de sede."
   }
 }
 

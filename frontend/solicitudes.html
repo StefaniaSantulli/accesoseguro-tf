@@ -39,7 +39,7 @@
 <script src="assets/auth.js"></script>
 <script src="assets/api.js"></script>
 <script>
-requireRole(["admin"]);
+requireRole([ROLES.PORTERO, ROLES.RESPONSABLE]);
 renderNav();
 
 async function cargar() {

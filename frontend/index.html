@@ -40,7 +40,7 @@
 <script src="config.js" onerror="window.APP_CONFIG = null"></script>
 <script src="assets/auth.js"></script>
 <script>
-const rol = requireRole(["conductor", "admin"]);
+const rol = requireRole(GRUPOS_VALIDOS);
 renderNav();
 
 const PASOS_CONDUCTOR = [
@@ -52,13 +52,13 @@ const PASOS_ADMIN = [
   { href: "panel-aprobacion.html", titulo: "Panel de aprobación", texto: "Revisá el documento adjunto de cada solicitud y aprobá o rechazá." },
   { href: "verificacion.html", titulo: "Verificación en portería", texto: "Buscá por DNI o patente y registrá el ingreso o egreso." },
   { href: "reporte.html", titulo: "Reporte histórico", texto: "Exportá un CSV con el historial filtrado por sede y fechas." },
-  { href: "auditoria.html", titulo: "Log de auditoría", texto: "Traza completa de todas las acciones del sistema." },
-  { href: "solicitudes.html", titulo: "Ver todas las solicitudes", texto: "Listado general con el estado actual de cada una." },
+  { href: "auditoria.html", titulo: "Log de auditoría", texto: "Acciones registradas para mi sede." },
+  { href: "solicitudes.html", titulo: "Solicitudes de mi sede", texto: "Listado general con el estado actual de cada una." },
 ];
 
 // En modo Cognito se muestran solo los pasos de los grupos del usuario.
 const visibles = linksVisibles().map((l) => l.href);
-const pasos = (rol === "admin" ? PASOS_ADMIN : PASOS_CONDUCTOR).filter((p) => visibles.includes(p.href));
+const pasos = (rol !== ROLES.TRANSPORTISTA ? PASOS_ADMIN : PASOS_CONDUCTOR).filter((p) => visibles.includes(p.href));
 document.getElementById("steps-container").innerHTML = pasos.map((p, i) => `
   <div class="col-step">
     <div class="card-step">

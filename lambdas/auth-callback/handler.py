@@ -8,6 +8,7 @@ ningún servidor ni queda en los logs del ALB).
 import base64
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 
@@ -34,10 +35,14 @@ def lambda_handler(event, context):
     frontend = os.environ["FRONTEND_URL"]
     params = event.get("queryStringParameters") or {}
     code = params.get("code")
+    state = params.get("state", "")
+    # El navegador compara este valor con el que guardó antes de iniciar login.
+    if not re.fullmatch(r"[a-f0-9]{64}", state):
+        return _redirect(f"{frontend}/#error=invalid_state")
 
     if not code:
         error = params.get("error", "missing_code")
-        return _redirect(f"{frontend}/#error={urllib.parse.quote(error)}")
+        return _redirect(f"{frontend}/#error={urllib.parse.quote(error)}&state={state}")
 
     client_id = os.environ["COGNITO_CLIENT_ID"]
     basic = base64.b64encode(f"{client_id}:{_get_client_secret()}".encode()).decode()
@@ -64,11 +69,12 @@ def lambda_handler(event, context):
             tokens = json.loads(resp.read())
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"level": "ERROR", "msg": "token_exchange_failed", "error": str(exc)}))
-        return _redirect(f"{frontend}/#error=token_exchange_failed")
+        return _redirect(f"{frontend}/#error=token_exchange_failed&state={state}")
 
     fragment = urllib.parse.urlencode({
         "id_token": tokens["id_token"],
         "access_token": tokens["access_token"],
         "expires_in": tokens.get("expires_in", 3600),
+        "state": state,
     })
     return _redirect(f"{frontend}/#{fragment}")

@@ -22,11 +22,12 @@
 <main class="steps">
   <div class="wrap">
     <!-- En AWS: login real con Cognito -->
+    <p id="login-error" role="alert"></p>
     <div id="login-cognito" style="display:none">
       <div class="row-roles">
         <button class="card-role" type="button" onclick="login()">
           <h2>Ingresar</h2>
-          <p>Iniciá sesión o registrate con tu mail. Si sos personal de planta, un administrador te asigna el grupo (responsable de sede o portería).</p>
+          <p>Iniciá sesión o registrate con tu mail. Si sos personal de planta, el operador del proyecto te asigna el rol de portero o responsable y tu sede.</p>
         </button>
       </div>
     </div>
@@ -34,16 +35,19 @@
     <!-- En local (sin config.js): selector de rol de la v3 -->
     <div id="login-local" style="display:none">
     <div class="row-roles">
-      <button class="card-role" type="button" onclick="elegirRol('conductor')">
-        <h2>Soy conductor / proveedor</h2>
+      <button class="card-role" type="button" onclick="elegirRol('transportistas')">
+        <h2>Soy transportista</h2>
         <p>Quiero cargar una solicitud de acceso a una planta o consultar el estado de las mías.</p>
       </button>
-      <button class="card-role" type="button" onclick="elegirRol('admin')">
-        <h2>Soy personal de planta (admin)</h2>
-        <p>Necesito aprobar o rechazar solicitudes, verificar ingresos en portería, y ver reportes y auditoría.</p>
+      <button class="card-role" type="button" onclick="elegirRol('porteros')">
+        <h2>Soy portero</h2><p>Verifico permisos y registro ingresos y egresos en mi sede.</p>
+      </button>
+      <button class="card-role" type="button" onclick="elegirRol('responsables_sede')">
+        <h2>Soy responsable de sede</h2><p>Apruebo solicitudes y consulto reportes y auditoría de mi sede.</p>
       </button>
     </div>
-    <p class="nota-rol">* Modo local: esta selección solo cambia qué pantallas ves. En AWS el ingreso es con Cognito.</p>
+    <label>Sede para la demostración <select id="demo-sede"><option value="1">Planta Central</option><option value="2">Depósito Norte</option><option value="3">Depósito Sur</option></select></label>
+    <p class="nota-rol">Demostración local. En AWS los roles internos y la sede los asigna el operador del proyecto.</p>
     </div>
   </div>
 </main>
@@ -56,6 +60,8 @@
 <script src="config.js" onerror="window.APP_CONFIG = null"></script>
 <script src="assets/auth.js"></script>
 <script>
+document.getElementById("login-error").textContent = storageGet(sessionStorage, "accesoseguro_login_error") || "";
+storageDel(sessionStorage, "accesoseguro_login_error");
 if (isCognitoMode()) {
   if (getRole()) window.location.href = "index.html"; // ya hay sesión
   document.getElementById("login-cognito").style.display = "block";
@@ -65,7 +71,8 @@ if (isCognitoMode()) {
 
 function elegirRol(rol) {
   setRole(rol);
-  window.location.href = rol === "admin" ? "panel-aprobacion.html" : "nueva-solicitud.html";
+  storageSet(localStorage, "accesoseguro_demo_sede", document.getElementById("demo-sede").value);
+  window.location.href = "index.html";
 }
 </script>
 </body>

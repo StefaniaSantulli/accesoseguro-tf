@@ -73,7 +73,7 @@ resource "aws_sns_topic_subscription" "colas" {
 # atributo "destinatario", y la filter policy de cada suscripción hace que cada
 # persona reciba solo lo suyo:
 #   - transportista: solo los avisos con su propio mail
-#   - personal:      los suyos + los dirigidos a "personal" (solicitud nueva)
+#   - responsable:   los suyos + los dirigidos a su sede (solicitud nueva)
 # -----------------------------------------------------------------------------
 resource "aws_sns_topic" "notificaciones_mail" {
   name              = "${local.name_prefix}-notificaciones-mail"
@@ -88,6 +88,6 @@ resource "aws_sns_topic_subscription" "notificaciones_mail" {
   endpoint            = each.key
   filter_policy_scope = "MessageAttributes"
   filter_policy = jsonencode({
-    destinatario = concat([lower(each.key)], each.value == "personal" ? ["personal"] : [])
+    destinatario = concat([lower(each.key)], startswith(each.value, "responsable-sede-") ? [each.value] : [])
   })
 }

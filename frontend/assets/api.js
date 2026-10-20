@@ -8,7 +8,12 @@ const API_BASE_URL =
 // vencido o inválido) se vuelve al login.
 function authHeaders(extra) {
   const token = getToken();
-  return Object.assign({}, extra || {}, token ? { Authorization: `Bearer ${token}` } : {});
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  if (!isCognitoMode()) {
+    headers["X-Demo-Role"] = getRole() || "";
+    headers["X-Demo-Sede"] = storageGet(localStorage, "accesoseguro_demo_sede") || "1";
+  }
+  return Object.assign({}, extra || {}, headers);
 }
 
 async function apiFetch(path, options) {
@@ -17,8 +22,10 @@ async function apiFetch(path, options) {
     logout();
     throw new Error("La sesión venció, volvé a ingresar");
   }
-  if (res.status === 403) throw new Error("No tenés permiso para esta acción");
-  if (!res.ok) throw new Error(`Error ${res.status} al consultar ${path}`);
+  if (!res.ok) {
+    const detalle = await res.json().catch(() => ({}));
+    throw new Error(detalle.error || `Error ${res.status} al consultar ${path}`);
+  }
   return res;
 }
 
