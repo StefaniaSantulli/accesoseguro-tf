@@ -5,6 +5,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+# Permisos de lectura para todos: el contenedor corre con un usuario sin privilegios.
+RUN chmod 644 app.py
 
 # Usuario sin privilegios
 RUN useradd --create-home appuser

@@ -52,7 +52,8 @@ async function apiDownload(path, filename) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  // Safari cancela la descarga si el archivo se libera enseguida: se espera.
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 // Sube un PDF directo a S3 con una presigned URL (no pasa por la API).

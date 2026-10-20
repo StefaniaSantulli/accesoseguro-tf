@@ -5,7 +5,7 @@
 Este repositorio levanta con Terraform la arquitectura de **AccesoSeguro** (versión del
 17/10/2026, con la devolución de la cátedra del 16/10): sitio estático en S3, login con la
 Hosted UI de Cognito, API Flask en ECS Fargate detrás de un ALB, RDS PostgreSQL Multi-AZ,
-6 Lambdas, SNS + SQS con DLQ y EventBridge; los avisos por mail salen por SNS. Sin EC2 y sin NAT Gateway.
+7 Lambdas, SNS + SQS con DLQ y EventBridge; los avisos por mail salen por SNS. Sin EC2 y sin NAT Gateway.
 
 ---
 
@@ -49,7 +49,7 @@ espera. La tabla DynamoDB del método clásico queda como opción (`create_dynam
 │       ├── lambda-function/          # Lambda + zip + log group
 │       ├── sqs-with-dlq/             # cola + DLQ + alarma
 │       └── s3-bucket/                # bucket compatible con el Learner Lab
-├── lambdas/<nombre>/handler.py       # código de las 6 Lambdas
+├── lambdas/<nombre>/handler.py       # código de las 7 Lambdas
 ├── backend/                          # API Flask + Dockerfile (imagen de ECS)
 ├── frontend/                         # sitio estático (HTML/CSS/JS) + config.js.tftpl
 ├── scripts/push-image.sh             # build + push a ECR + redeploy de ECS
@@ -92,9 +92,9 @@ flowchart LR
 | Capa (PDF) | Servicio | Archivo | Recursos principales |
 |---|---|---|---|
 | Front | S3 sitio estático | `frontend.tf` | `aws_s3_bucket.sitio`, website, policy pública de lectura, `aws_s3_object` |
-| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 grupos, dominio, app client, HTTP API |
+| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 5 grupos (transportistas, personal_planta, responsables_sede, porteria, administradores), dominio, app client, HTTP API |
 | Entrada | Internet Gateway + ALB | `modules/network`, `alb.tf` | IGW, `aws_lb`, target group tipo `ip`, listener 80 |
-| Cómputo | ECS Fargate, ECR, 6 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
+| Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
 | Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
 | Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópico, `module.sqs`, suscripciones, regla cada 15 min |
 | Seguridad | VPC, SG, NACL, Secrets Manager, KMS, LabRole, CloudTrail | `network.tf`, `security.tf` | SG encadenados, NACL datos, clave KMS, secretos |
@@ -117,7 +117,7 @@ Security Groups encadenados: `alb` (80 desde internet) → `ecs` (5000 solo desd
 | Módulo | Tipo | Para qué | Cómo se usa |
 |---|---|---|---|
 | `modules/network` | **Propio** | VPC en 3 capas x 2 AZ, IGW, tablas de ruteo y NACL | Una vez, en `network.tf` |
-| `modules/lambda-function` | **Propio** | Empaquetar y crear una Lambda con su log group | Una llamada con `for_each` crea las 6 |
+| `modules/lambda-function` | **Propio** | Empaquetar y crear una Lambda con su log group | Una llamada con `for_each` crea las 7 |
 | `modules/sqs-with-dlq` | **Propio** | Cola + DLQ + alarma | Una llamada con `for_each` crea las 3 colas |
 | `modules/s3-bucket` | **Propio** | Bucket con cifrado, versionado, políticas, lifecycle, CORS y website, compatible con el Learner Lab | `for_each` (documentos y auditoría), una vez para el sitio y con `count` para CloudTrail |
 | `terraform-aws-modules/ecr/aws` `~> 2.0` | **Externo** (Terraform Registry) | Repositorio ECR con tags inmutables, escaneo, cifrado KMS y lifecycle policy | Una vez, en `ecs.tf` |
@@ -236,6 +236,16 @@ make outputs    # sitio_url, api_url, login_url...
    make grupo EMAIL=admin@mail.com       GRUPO=administradores     # todo
    ```
    El usuario tiene que **salir y volver a ingresar** para que el grupo aparezca en su token.
+
+   **Primer ingreso (elegir rol):** un usuario sin grupo ve la pantalla `elegir-rol.html` y elige
+   *Transportista* o *Personal de planta* (grupo `personal_planta`, que aprueba y también controla
+   la portería; `responsables_sede` y `porteria` siguen existiendo para separar roles con
+   `make grupo`). Flask (`POST /api/mi-rol`) le pide a la
+   Lambda `gestionar-usuarios` (fuera de la VPC, porque Cognito es público y ECS no tiene internet)
+   que lo agregue al grupo, y el sitio refresca la sesión para traer el token nuevo. Se elige una
+   sola vez y `administradores` no se puede elegir. **Decisión consciente:** cualquiera puede
+   elegir un rol con permisos; en producción el rol de personal quedaría pendiente hasta que lo
+   apruebe un administrador.
 4. Flujo completo: el transportista crea una solicitud con PDF → el PDF sube directo a S3 →
    S3 avisa a `cola-documentos` → Lambda `validar-documento`. La API publica el evento en SNS →
    `cola-auditoria` (Lambda guarda el JSON en el bucket de auditoría) y `cola-notificaciones`

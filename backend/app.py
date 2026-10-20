@@ -40,10 +40,13 @@ MAX_PDF_SIZE_MB = int(os.environ.get("MAX_PDF_SIZE_MB", "10"))
 # Bucket de documentos (lo inyecta Terraform como DOCS_BUCKET).
 BUCKET_NAME = os.environ.get("DOCS_BUCKET") or os.environ.get("BUCKET_NAME", "accesoseguro-documentos-local")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
+# Lambda que asigna el grupo de Cognito cuando el usuario elige su rol.
+ROLES_LAMBDA_NAME = os.environ.get("ROLES_LAMBDA_NAME", "")
 
 # s3v4 es obligatorio para presigned URLs de objetos cifrados con KMS.
 s3 = boto3.client("s3", region_name=REGION, config=Config(signature_version="s3v4"))
 sns = boto3.client("sns", region_name=REGION)
+lambda_client = boto3.client("lambda", region_name=REGION)
 
 app = Flask(__name__)
 
@@ -182,9 +185,13 @@ COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
 AUTH_ENABLED = bool(COGNITO_JWKS)
 _JWKS = jwt.PyJWKSet.from_json(COGNITO_JWKS) if AUTH_ENABLED else None
 
-GRUPOS_RESPONSABLE = {"responsables_sede", "administradores"}
-GRUPOS_PORTERIA = {"porteria", "administradores"}
+# personal_planta = el "admin" de la v3: aprueba y también controla la portería.
+GRUPOS_RESPONSABLE = {"responsables_sede", "personal_planta", "administradores"}
+GRUPOS_PORTERIA = {"porteria", "personal_planta", "administradores"}
 GRUPOS_PERSONAL = GRUPOS_RESPONSABLE | GRUPOS_PORTERIA
+# Roles que el usuario puede elegir solo, la primera vez que entra.
+# administradores NO: ese lo asigna el equipo.
+ROLES_ELEGIBLES = {"transportistas", "personal_planta"}
 
 
 def _validar_token(token):
@@ -211,7 +218,7 @@ def requiere_login(grupos=None):
         @wraps(fn)
         def envoltura(*args, **kwargs):
             if not AUTH_ENABLED:  # modo local: sin Cognito
-                g.usuario = {"email": "local@accesoseguro", "grupos": list(GRUPOS_PERSONAL), "empresa_id": None}
+                g.usuario = {"email": "local@accesoseguro", "username": "local", "grupos": list(GRUPOS_PERSONAL), "empresa_id": None}
                 return fn(*args, **kwargs)
 
             cabecera = request.headers.get("Authorization", "")
@@ -224,6 +231,7 @@ def requiere_login(grupos=None):
 
             g.usuario = {
                 "email": claims.get("email"),
+                "username": claims.get("cognito:username"),
                 "grupos": claims.get("cognito:groups", []),
                 "empresa_id": claims.get("custom:empresa_id"),
                 "sede_id": claims.get("custom:sede_id"),
@@ -307,6 +315,41 @@ def listar_sedes():
 @requiere_login()
 def quien_soy():
     return jsonify(g.usuario)
+
+
+@app.route("/api/mi-rol", methods=["POST"])
+@requiere_login()
+def elegir_rol():
+    """El usuario elige su rol la primera vez que entra (una sola vez).
+
+    Flask no tiene salida a internet: le pide a la Lambda gestionar-usuarios
+    (fuera de la VPC) que lo agregue al grupo de Cognito. El grupo recién
+    aparece en el token cuando el usuario vuelve a ingresar.
+    """
+    data = request.get_json(silent=True) or {}
+    grupo = data.get("grupo")
+    if grupo not in ROLES_ELEGIBLES:
+        return jsonify({"error": "Rol inválido"}), 400
+    if g.usuario["grupos"]:
+        return jsonify({"error": "Ya tenés un rol asignado"}), 409
+    if not AUTH_ENABLED:  # modo local: no hay Cognito
+        return jsonify({"ok": True, "grupo": grupo})
+
+    respuesta = lambda_client.invoke(
+        FunctionName=ROLES_LAMBDA_NAME,
+        Payload=json.dumps({
+            "username": g.usuario["username"],
+            "email": g.usuario.get("email"),
+            "grupo": grupo,
+        }).encode(),
+    )
+    resultado = json.loads(respuesta["Payload"].read() or b"{}")
+    if not resultado.get("ok"):
+        return jsonify({"error": resultado.get("error", "No se pudo asignar el rol")}), 409
+
+    auditar("Elección de rol", f"{g.usuario.get('email')} eligió {grupo}")
+    db.session.commit()
+    return jsonify({"ok": True, "grupo": grupo})
 
 
 # -----------------------------------------------------------------------------
@@ -431,13 +474,21 @@ def exportar_reporte():
     desde = request.args.get("desde")
     hasta = request.args.get("hasta")
 
+    # Las fechas llegan como texto (AAAA-MM-DD). Se convierten a datetime antes
+    # de comparar: PostgreSQL no compara una columna timestamp contra texto.
+    try:
+        fecha_desde = datetime.strptime(desde, "%Y-%m-%d") if desde else None
+        fecha_hasta = datetime.strptime(hasta, "%Y-%m-%d") + timedelta(days=1) if hasta else None
+    except ValueError:
+        return jsonify({"error": "Las fechas tienen que tener el formato AAAA-MM-DD"}), 400
+
     query = Solicitud.query
     if sede_id:
-        query = query.filter_by(sede_id=sede_id)
-    if desde:
-        query = query.filter(Solicitud.fecha_creacion >= desde)
-    if hasta:
-        query = query.filter(Solicitud.fecha_creacion <= hasta + " 23:59:59")
+        query = query.filter_by(sede_id=int(sede_id))
+    if fecha_desde:
+        query = query.filter(Solicitud.fecha_creacion >= fecha_desde)
+    if fecha_hasta:
+        query = query.filter(Solicitud.fecha_creacion < fecha_hasta)  # incluye todo el día "hasta"
 
     output = io.StringIO()
     writer = csv.writer(output)

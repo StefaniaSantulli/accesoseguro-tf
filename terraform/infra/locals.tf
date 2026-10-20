@@ -215,6 +215,17 @@ locals {
         EVENT_PREFIX = "eventos/"
       }
     }
+    gestionar-usuarios = {
+      description = "Agrega al usuario al grupo de Cognito que eligio en su primer ingreso"
+      timeout     = 10
+      memory_size = 128
+      in_vpc      = false
+      environment = {
+        USER_POOL_ID             = aws_cognito_user_pool.main.id
+        GRUPOS_PERMITIDOS        = "transportistas,personal_planta"
+        NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
+      }
+    }
     notificar-mail = {
       description = "Arma el aviso según el evento y lo publica en el tópico SNS de mails"
       timeout     = 30
@@ -234,6 +245,8 @@ locals {
     responsables_sede = { precedence = 10, description = "Aprueban o rechazan solicitudes de su sede" }
     porteria          = { precedence = 20, description = "Registran ingresos y egresos en su sede" }
     administradores   = { precedence = 1, description = "Crean usuarios y asignan grupos, sedes y empresas" }
+    transportistas    = { precedence = 30, description = "Cargan solicitudes de acceso y suben su documentacion" }
+    personal_planta   = { precedence = 5, description = "Personal de planta: aprueba solicitudes y controla la porteria" }
   }
 
   cognito_domain_prefix = format("%s-%s", local.name_prefix, local.account_id)
@@ -268,6 +281,7 @@ locals {
     SNS_TOPIC_ARN        = aws_sns_topic.eventos_solicitud.arn
     DOCS_BUCKET          = local.bucket_names["documentos"]
     REPORT_LAMBDA_NAME   = module.lambdas["generar-reporte"].function_name
+    ROLES_LAMBDA_NAME    = module.lambdas["gestionar-usuarios"].function_name
     PRESIGNED_URL_TTL    = tostring(var.presigned_url_ttl_seconds)
     CORS_ALLOWED_ORIGIN  = local.site_url
     MAX_PDF_SIZE_MB      = tostring(var.max_pdf_size_mb)

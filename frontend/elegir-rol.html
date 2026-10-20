@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AccesoSeguro — Elegí tu rol</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <span class="pill">Primer ingreso</span>
+    <h1>¿Cómo vas a usar AccesoSeguro?</h1>
+    <p>Elegí tu rol. Se elige una sola vez: si te equivocás, pedile al administrador que lo cambie.</p>
+  </div>
+</header>
+
+<main class="steps">
+  <div class="wrap">
+    <div id="mensaje" class="alert-success-custom mb-field" style="display:none"></div>
+    <div class="row-roles">
+      <button class="card-role" type="button" onclick="elegir('transportistas')">
+        <h2>Soy transportista</h2>
+        <p>Cargo solicitudes de acceso a las plantas, subo mi documentación y consulto su estado.</p>
+      </button>
+      <button class="card-role" type="button" onclick="elegir('personal_planta')">
+        <h2>Soy personal de planta</h2>
+        <p>Apruebo o rechazo solicitudes, verifico permisos en portería, registro ingresos y egresos, y veo reportes y auditoría.</p>
+      </button>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+// Sin sesión -> login. Con rol ya elegido -> inicio.
+const rolActual = getRole();
+if (!rolActual) window.location.href = "login.html";
+else if (rolActual !== ROLES.SIN_ROL) window.location.href = "index.html";
+
+let enviando = false;
+async function elegir(grupo) {
+  if (enviando) return;
+  enviando = true;
+  const msg = document.getElementById("mensaje");
+  msg.style.display = "block";
+  msg.textContent = "Guardando tu rol...";
+  try {
+    await apiPostJSON("/api/mi-rol", { grupo });
+    msg.textContent = "Listo. Actualizando tu sesión...";
+  } catch (err) {
+    // 409 = ya tenía rol: igual refrescamos la sesión para traerlo.
+    msg.textContent = "No se pudo guardar el rol: " + err.message + ". Actualizando tu sesión...";
+  }
+  // El grupo nuevo recién viaja en un token nuevo.
+  setTimeout(refrescarSesion, 1200);
+}
+</script>
+</body>
+</html>

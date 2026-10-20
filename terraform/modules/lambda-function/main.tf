@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------------
 # Módulo propio: una función Lambda en Python empaquetada desde una carpeta.
-# Se llama una vez con for_each desde la raíz para crear las 6 funciones
+# Se llama una vez con for_each desde la raíz para crear las 7 funciones
 # sin repetir código (DRY).
 # -----------------------------------------------------------------------------
 
@@ -11,6 +11,10 @@ data "archive_file" "this" {
   source_dir  = var.source_dir
   output_path = "${var.build_dir}/${var.function_name}.zip"
   excludes    = ["__pycache__", "*.pyc", "tests"]
+
+  # Permisos fijos dentro del zip: Lambda necesita poder leer el código, sin
+  # importar con qué permisos quedó el archivo en la compu de cada uno.
+  output_file_mode = "0644"
 }
 
 # El log group se crea antes que la función para fijar la retención. Si no,

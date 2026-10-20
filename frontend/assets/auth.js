@@ -8,9 +8,10 @@
 //
 // En local (sin config.js): se mantiene el selector de rol de la v3.
 
-const ROLES = { CONDUCTOR: "conductor", ADMIN: "admin" };
-const GRUPOS_RESPONSABLE = ["responsables_sede", "administradores"];
-const GRUPOS_PORTERIA = ["porteria", "administradores"];
+const ROLES = { CONDUCTOR: "conductor", ADMIN: "admin", SIN_ROL: "sin_rol" };
+const GRUPOS_RESPONSABLE = ["responsables_sede", "personal_planta", "administradores"];
+const GRUPOS_PORTERIA = ["porteria", "personal_planta", "administradores"];
+const GRUPO_TRANSPORTISTA = "transportistas";
 
 function isCognitoMode() {
   return !!(window.APP_CONFIG && window.APP_CONFIG.loginUrl);
@@ -64,7 +65,9 @@ function hasAnyGroup(grupos) {
 function getRole() {
   if (isCognitoMode()) {
     if (!getClaims()) return null;
-    return hasAnyGroup([...GRUPOS_RESPONSABLE, ...GRUPOS_PORTERIA]) ? ROLES.ADMIN : ROLES.CONDUCTOR;
+    if (hasAnyGroup([...GRUPOS_RESPONSABLE, ...GRUPOS_PORTERIA])) return ROLES.ADMIN;
+    if (hasAnyGroup([GRUPO_TRANSPORTISTA])) return ROLES.CONDUCTOR;
+    return ROLES.SIN_ROL; // primer ingreso: todavía no eligió su rol
   }
   return storageGet(localStorage, "accesoseguro_rol");
 }
@@ -77,17 +80,30 @@ function login() {
   if (isCognitoMode()) window.location.href = window.APP_CONFIG.loginUrl;
 }
 
+// Vuelve a pasar por Cognito para traer un token nuevo (por ejemplo, con el
+// grupo recién asignado). Como la sesión de la Hosted UI sigue abierta, no
+// pide la contraseña de nuevo.
+function refrescarSesion() {
+  storageDel(sessionStorage, "accesoseguro_id_token");
+  login();
+}
+
 function logout() {
   storageDel(sessionStorage, "accesoseguro_id_token");
   storageDel(localStorage, "accesoseguro_rol");
   window.location.href = "login.html";
 }
 
-// Redirige a login si no hay sesión, o a index si el rol no puede ver la página.
+// Redirige a login si no hay sesión, a elegir-rol si es el primer ingreso, o a
+// index si el rol no puede ver la página.
 function requireRole(rolesPermitidos) {
   const rol = getRole();
   if (!rol) {
     window.location.href = "login.html";
+    return null;
+  }
+  if (rol === ROLES.SIN_ROL) {
+    window.location.href = "elegir-rol.html";
     return null;
   }
   if (!rolesPermitidos.includes(rol)) {

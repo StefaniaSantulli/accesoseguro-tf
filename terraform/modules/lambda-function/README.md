@@ -1,7 +1,7 @@
 # Módulo `lambda-function` (propio)
 
 Empaqueta una carpeta de código Python en un zip (`archive_file`) y crea la función
-con su log group (retención fija). Se usa con `for_each` desde la raíz para las 6
+con su log group (retención fija). Se usa con `for_each` desde la raíz para las 7
 Lambdas de AccesoSeguro.
 
 - `vpc_config = null` → la función corre fuera de la VPC.
