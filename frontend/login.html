@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AccesoSeguro — Ingresar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <span class="pill">Sistema de gestión de accesos</span>
+    <h1>AccesoSeguro</h1>
+    <p>Control de acceso a plantas industriales.</p>
+  </div>
+</header>
+
+<main class="steps">
+  <div class="wrap">
+    <!-- En AWS: login real con Cognito -->
+    <div id="login-cognito" style="display:none">
+      <div class="row-roles">
+        <button class="card-role" type="button" onclick="login()">
+          <h2>Ingresar</h2>
+          <p>Iniciá sesión o registrate con tu mail. Si sos personal de planta, un administrador te asigna el grupo (responsable de sede o portería).</p>
+        </button>
+      </div>
+    </div>
+
+    <!-- En local (sin config.js): selector de rol de la v3 -->
+    <div id="login-local" style="display:none">
+    <div class="row-roles">
+      <button class="card-role" type="button" onclick="elegirRol('conductor')">
+        <h2>Soy conductor / proveedor</h2>
+        <p>Quiero cargar una solicitud de acceso a una planta o consultar el estado de las mías.</p>
+      </button>
+      <button class="card-role" type="button" onclick="elegirRol('admin')">
+        <h2>Soy personal de planta (admin)</h2>
+        <p>Necesito aprobar o rechazar solicitudes, verificar ingresos en portería, y ver reportes y auditoría.</p>
+      </button>
+    </div>
+    <p class="nota-rol">* Modo local: esta selección solo cambia qué pantallas ves. En AWS el ingreso es con Cognito.</p>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script>
+if (isCognitoMode()) {
+  if (getRole()) window.location.href = "index.html"; // ya hay sesión
+  document.getElementById("login-cognito").style.display = "block";
+} else {
+  document.getElementById("login-local").style.display = "block";
+}
+
+function elegirRol(rol) {
+  setRole(rol);
+  window.location.href = rol === "admin" ? "panel-aprobacion.html" : "nueva-solicitud.html";
+}
+</script>
+</body>
+</html>

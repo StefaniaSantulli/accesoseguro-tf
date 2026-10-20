@@ -11,4 +11,5 @@ RUN useradd --create-home appuser
 USER appuser
 
 EXPOSE 5000
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "app:app"]
+# 2 workers por task (0,25 vCPU). Las tablas se crean al importar app.py.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "60", "--access-logfile", "-", "app:app"]

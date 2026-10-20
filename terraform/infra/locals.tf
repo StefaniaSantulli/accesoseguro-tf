@@ -216,13 +216,13 @@ locals {
       }
     }
     notificar-mail = {
-      description = "Arma el mail según el evento y lo manda con SES"
+      description = "Arma el aviso según el evento y lo publica en el tópico SNS de mails"
       timeout     = 30
       memory_size = 128
       in_vpc      = false
       environment = {
-        SES_SENDER = var.ses_sender_email
-        SITE_URL   = local.site_url
+        NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
+        SITE_URL                 = local.site_url
       }
     }
   }

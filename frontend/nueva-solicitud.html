@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nueva solicitud — AccesoSeguro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar-custom">
+  <div class="wrap">
+    <a class="navbar-brand-custom" href="index.html">AccesoSeguro</a>
+    <div class="navbar-links" id="nav-links"></div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="wrap">
+    <div class="page-header">
+      <h1>Nueva solicitud de acceso</h1>
+      <p>Completá los datos para solicitar autorización de ingreso</p>
+    </div>
+
+    <div class="panel-card" style="max-width:640px">
+      <div id="mensaje-exito" class="alert-success-custom mb-field" style="display:none"></div>
+      <form id="form-solicitud">
+        <div class="mb-field">
+          <label>Nombre completo</label>
+          <input class="form-control" type="text" name="nombre_solicitante" required>
+        </div>
+        <div class="mb-field">
+          <label>DNI</label>
+          <input class="form-control" type="text" name="dni" required>
+        </div>
+        <div class="mb-field">
+          <label>Patente (si aplica)</label>
+          <input class="form-control" type="text" name="patente">
+        </div>
+        <div class="mb-field">
+          <label>Empresa</label>
+          <input class="form-control" type="text" name="empresa">
+        </div>
+        <div class="mb-field">
+          <label>Motivo de la visita</label>
+          <input class="form-control" type="text" name="motivo">
+        </div>
+        <div class="mb-field">
+          <label>Documento de respaldo en PDF (seguro, remito o DNI)</label>
+          <input class="form-control" type="file" name="documento" accept="application/pdf">
+        </div>
+        <div class="mb-field">
+          <label>Sede</label>
+          <select class="form-select" name="sede_id" id="select-sede" required></select>
+        </div>
+        <button type="submit" class="btn-primary-custom">Enviar solicitud</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+requireRole(["conductor"]);
+renderNav();
+
+async function cargarSedes() {
+  try {
+    const sedes = await apiGet("/api/sedes");
+    const select = document.getElementById("select-sede");
+    select.innerHTML = sedes.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join("");
+  } catch (err) {
+    console.error("No se pudieron cargar las sedes:", err);
+  }
+}
+cargarSedes();
+
+document.getElementById("form-solicitud").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const formData = new FormData(e.target);
+  const archivo = formData.get("documento");
+  formData.delete("documento"); // el PDF no pasa por la API: va directo a S3
+  try {
+    const solicitud = await apiPostForm("/api/solicitudes", formData);
+    let texto = "Solicitud enviada correctamente. Queda pendiente de aprobación.";
+    if (archivo && archivo.size > 0) {
+      try {
+        await subirDocumento(solicitud.id, archivo);
+        texto += " El documento se subió y se está validando.";
+      } catch (errDoc) {
+        texto += " Pero no se pudo subir el documento: " + errDoc.message;
+      }
+    }
+    const msg = document.getElementById("mensaje-exito");
+    msg.textContent = texto;
+    msg.style.display = "block";
+    e.target.reset();
+    cargarSedes();
+  } catch (err) {
+    alert("No se pudo enviar la solicitud: " + err.message);
+  }
+});
+</script>
+</body>
+</html>

@@ -26,3 +26,8 @@ terraform/infra/.build/
 __pycache__/
 *.pyc
 .venv/
+
+# Base SQLite local del backend
+backend/instance/
+*.db
+tfplan

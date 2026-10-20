@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log de auditoría — AccesoSeguro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar-custom">
+  <div class="wrap">
+    <a class="navbar-brand-custom" href="index.html">AccesoSeguro</a>
+    <div class="navbar-links" id="nav-links"></div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="wrap">
+    <div class="page-header">
+      <h1>Log de auditoría</h1>
+      <p>Traza completa de acciones del sistema</p>
+    </div>
+    <div id="lista-logs">Cargando...</div>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+requireRole(["admin"]);
+renderNav();
+
+async function cargar() {
+  const cont = document.getElementById("lista-logs");
+  try {
+    const logs = await apiGet("/api/auditoria");
+    if (logs.length === 0) {
+      cont.innerHTML = '<div class="panel-card"><div class="empty-state">Todavía no hay eventos registrados.</div></div>';
+      return;
+    }
+    cont.innerHTML = `<ul class="list-clean">${logs.map((l) => `<li><div class="meta">${l.fecha}</div><b>${l.accion}:</b> ${l.detalle}</li>`).join("")}</ul>`;
+  } catch (err) {
+    cont.innerHTML = `<div class="panel-card"><div class="empty-state">Error al cargar: ${err.message}</div></div>`;
+  }
+}
+
+cargar();
+</script>
+</body>
+</html>
