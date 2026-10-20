@@ -92,7 +92,7 @@ flowchart LR
 | Capa (PDF) | Servicio | Archivo | Recursos principales |
 |---|---|---|---|
 | Front | S3 sitio estático | `frontend.tf` | `aws_s3_bucket.sitio`, website, policy pública de lectura, `aws_s3_object` |
-| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 5 grupos (transportistas, personal_planta, responsables_sede, porteria, administradores), dominio, app client, HTTP API |
+| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 2 grupos (transportistas y administradores), dominio, app client, HTTP API |
 | Entrada | Internet Gateway + ALB | `modules/network`, `alb.tf` | IGW, `aws_lb`, target group tipo `ip`, listener 80 |
 | Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
 | Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
@@ -231,16 +231,13 @@ make outputs    # sitio_url, api_url, login_url...
 2. Un usuario sin grupo es **transportista**: carga solicitudes (con PDF) y ve las suyas.
 3. Para el personal de planta, asignar el grupo:
    ```bash
-   make grupo EMAIL=responsable@mail.com GRUPO=responsables_sede   # aprobación, reportes, auditoría
-   make grupo EMAIL=porteria@mail.com    GRUPO=porteria            # verificación, ingreso y egreso
    make grupo EMAIL=admin@mail.com       GRUPO=administradores     # todo
    ```
    El usuario tiene que **salir y volver a ingresar** para que el grupo aparezca en su token.
 
    **Primer ingreso (elegir rol):** un usuario sin grupo ve la pantalla `elegir-rol.html` y elige
-   *Transportista* o *Personal de planta* (grupo `personal_planta`, que aprueba y también controla
-   la portería; `responsables_sede` y `porteria` siguen existiendo para separar roles con
-   `make grupo`). Flask (`POST /api/mi-rol`) le pide a la
+   *Transportista* (grupo `transportistas`) o *Administrador / personal de planta* (grupo
+   `administradores`: aprueba, rechaza, portería, reportes y auditoría). Flask (`POST /api/mi-rol`) le pide a la
    Lambda `gestionar-usuarios` (fuera de la VPC, porque Cognito es público y ECS no tiene internet)
    que lo agregue al grupo, y el sitio refresca la sesión para traer el token nuevo. Se elige una
    sola vez y `administradores` no se puede elegir. **Decisión consciente:** cualquiera puede
@@ -303,8 +300,8 @@ el `fmt -check`.
 - **`backend/`** — API Flask (JSON) que corre en ECS. Se conecta a RDS con las variables que
   inyecta la task definition (la contraseña sale de Secrets Manager), valida el token de Cognito
   (firma, emisor, cliente, vencimiento) con las llaves que Terraform le pasa en `COGNITO_JWKS`, y
-  autoriza por grupo: `responsables_sede` (aprobar, reportes, auditoría), `porteria`
-  (verificación, ingreso/egreso), `administradores` (todo); sin grupo = transportista.
+  autoriza por grupo: `transportistas` (cargan solicitudes y documentación) y `administradores`
+  (aprueban/rechazan, portería, ingreso/egreso, reportes y auditoría); sin grupo = elige rol.
   Genera presigned URLs para subir y ver los PDFs (clave `empresas/{empresa}/solicitudes/{id}/...`)
   y publica los eventos en SNS. Sin `DB_HOST` ni `COGNITO_JWKS` corre en local con SQLite y sin login.
 - **`frontend/`** — HTML/CSS/JS sin build. En AWS el login es con la Hosted UI de Cognito y el rol

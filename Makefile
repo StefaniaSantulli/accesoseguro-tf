@@ -30,7 +30,7 @@ apply:           ## Aplica el último plan
 image:           ## Construye y sube la imagen de backend/ a ECR (tag de terraform.tfvars)
 	./scripts/push-image.sh
 
-grupo:           ## Asigna un grupo de Cognito: make grupo EMAIL=x@y.com GRUPO=responsables_sede
+grupo:           ## Asigna un grupo de Cognito: make grupo EMAIL=x@y.com GRUPO=administradores
 	aws cognito-idp admin-add-user-to-group --user-pool-id $$(cd $(INFRA) && terraform output -raw cognito_user_pool_id) --username $(EMAIL) --group-name $(GRUPO)
 
 outputs:         ## Muestra URLs y nombres útiles

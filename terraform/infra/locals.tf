@@ -222,7 +222,7 @@ locals {
       in_vpc      = false
       environment = {
         USER_POOL_ID             = aws_cognito_user_pool.main.id
-        GRUPOS_PERMITIDOS        = "transportistas,personal_planta"
+        GRUPOS_PERMITIDOS        = "transportistas,administradores"
         NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
       }
     }
@@ -241,12 +241,11 @@ locals {
   # ---------------------------------------------------------------------------
   # Cognito
   # ---------------------------------------------------------------------------
+  # Dos roles: transportistas (crean solicitudes) y administradores (personal
+  # de planta: aprueban, rechazan, portería, reportes y auditoría).
   cognito_groups = {
-    responsables_sede = { precedence = 10, description = "Aprueban o rechazan solicitudes de su sede" }
-    porteria          = { precedence = 20, description = "Registran ingresos y egresos en su sede" }
-    administradores   = { precedence = 1, description = "Crean usuarios y asignan grupos, sedes y empresas" }
-    transportistas    = { precedence = 30, description = "Cargan solicitudes de acceso y suben su documentacion" }
-    personal_planta   = { precedence = 5, description = "Personal de planta: aprueba solicitudes y controla la porteria" }
+    transportistas  = { precedence = 20, description = "Cargan solicitudes de acceso y suben su documentacion" }
+    administradores = { precedence = 1, description = "Personal de planta: aprueban, controlan la porteria y ven reportes" }
   }
 
   cognito_domain_prefix = format("%s-%s", local.name_prefix, local.account_id)

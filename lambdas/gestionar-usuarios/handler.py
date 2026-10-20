@@ -4,12 +4,12 @@ La invoca Flask (por el VPC Endpoint de Lambda) cuando un usuario elige su rol.
 Corre fuera de la VPC porque Cognito es un servicio público y las tasks de ECS
 no tienen salida a internet. Hace dos cosas:
 
-1. Lo agrega al grupo de Cognito que eligió (solo si todavía no tiene grupo:
-   el rol se elige una vez; administradores no se puede elegir).
+1. Lo agrega al grupo de Cognito que eligió (transportistas o
+   administradores), solo si todavía no tiene grupo: el rol se elige una vez.
 2. Suscribe su mail al tópico SNS de notificaciones, con la filter policy de
    su rol, para que los avisos le lleguen solos:
    - transportistas  -> los avisos dirigidos a su mail (aprobada, rechazada...)
-   - personal_planta -> además los dirigidos a "personal" (solicitud nueva)
+   - administradores -> además los dirigidos a "personal" (solicitud nueva)
    AWS le manda un mail para confirmar la suscripción.
 """
 import json
@@ -22,7 +22,7 @@ sns = boto3.client("sns")
 USER_POOL_ID = os.environ["USER_POOL_ID"]
 GRUPOS_PERMITIDOS = set(os.environ.get("GRUPOS_PERMITIDOS", "").split(","))
 TOPIC_ARN = os.environ.get("NOTIFICACIONES_TOPIC_ARN", "")
-GRUPOS_PERSONAL = {"personal_planta", "responsables_sede", "porteria"}
+GRUPOS_PERSONAL = {"administradores"}
 
 
 def _suscribir(email, grupo):

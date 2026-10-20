@@ -9,8 +9,9 @@
 // En local (sin config.js): se mantiene el selector de rol de la v3.
 
 const ROLES = { CONDUCTOR: "conductor", ADMIN: "admin", SIN_ROL: "sin_rol" };
-const GRUPOS_RESPONSABLE = ["responsables_sede", "personal_planta", "administradores"];
-const GRUPOS_PORTERIA = ["porteria", "personal_planta", "administradores"];
+// Dos roles: transportistas y administradores (personal de planta).
+const GRUPOS_RESPONSABLE = ["administradores"];
+const GRUPOS_PORTERIA = ["administradores"];
 const GRUPO_TRANSPORTISTA = "transportistas";
 
 function isCognitoMode() {

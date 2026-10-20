@@ -185,13 +185,14 @@ COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
 AUTH_ENABLED = bool(COGNITO_JWKS)
 _JWKS = jwt.PyJWKSet.from_json(COGNITO_JWKS) if AUTH_ENABLED else None
 
-# personal_planta = el "admin" de la v3: aprueba y también controla la portería.
-GRUPOS_RESPONSABLE = {"responsables_sede", "personal_planta", "administradores"}
-GRUPOS_PORTERIA = {"porteria", "personal_planta", "administradores"}
+# Dos roles: transportistas (crean solicitudes) y administradores (el personal
+# de planta: aprueban, rechazan, controlan la portería, ven reportes y auditoría).
+GRUPO_ADMIN = "administradores"
+GRUPOS_RESPONSABLE = {GRUPO_ADMIN}
+GRUPOS_PORTERIA = {GRUPO_ADMIN}
 GRUPOS_PERSONAL = GRUPOS_RESPONSABLE | GRUPOS_PORTERIA
 # Roles que el usuario puede elegir solo, la primera vez que entra.
-# administradores NO: ese lo asigna el equipo.
-ROLES_ELEGIBLES = {"transportistas", "personal_planta"}
+ROLES_ELEGIBLES = {"transportistas", GRUPO_ADMIN}
 
 
 def _validar_token(token):
