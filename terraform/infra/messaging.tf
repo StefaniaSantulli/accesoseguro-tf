@@ -1,5 +1,6 @@
 # =============================================================================
-# EVENTOS: SNS (fan-out) -> SQS (con DLQ) -> Lambdas, y SES para los mails.
+# EVENTOS: SNS (fan-out) -> SQS (con DLQ) -> Lambdas, y SNS por mail para
+# las notificaciones a las personas.
 # =============================================================================
 
 # Flask publica cada evento una sola vez y SNS lo reparte a las colas.
@@ -64,11 +65,29 @@ resource "aws_sns_topic_subscription" "colas" {
 }
 
 # -----------------------------------------------------------------------------
-# SES: en el Learner Lab está en sandbox, solo manda a direcciones verificadas.
-# Cada dirección recibe un mail de AWS para confirmar.
+# Notificaciones por mail con SNS (reemplaza a SES: en el Learner Lab el
+# LabRole no puede verificar identidades de SES, así que SES no puede mandar).
+#
+# Cada dirección se suscribe al tópico y tiene que CONFIRMAR la suscripción con
+# el link que le manda AWS. La Lambda notificar-mail publica cada aviso con el
+# atributo "destinatario", y la filter policy de cada suscripción hace que cada
+# persona reciba solo lo suyo:
+#   - transportista: solo los avisos con su propio mail
+#   - responsable:   los suyos + los dirigidos a su sede (solicitud nueva)
 # -----------------------------------------------------------------------------
-resource "aws_ses_email_identity" "this" {
-  for_each = toset(compact(concat([var.ses_sender_email], var.ses_verified_emails)))
+resource "aws_sns_topic" "notificaciones_mail" {
+  name              = "${local.name_prefix}-notificaciones-mail"
+  kms_master_key_id = aws_kms_key.main.arn
+}
 
-  email = each.value
+resource "aws_sns_topic_subscription" "notificaciones_mail" {
+  for_each = var.notificaciones_suscriptores
+
+  topic_arn           = aws_sns_topic.notificaciones_mail.arn
+  protocol            = "email"
+  endpoint            = each.key
+  filter_policy_scope = "MessageAttributes"
+  filter_policy = jsonencode({
+    destinatario = concat([lower(each.key)], startswith(each.value, "responsable-sede-") ? [each.value] : [])
+  })
 }

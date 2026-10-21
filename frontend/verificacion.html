@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verificación en portería — AccesoSeguro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar-custom">
+  <div class="wrap">
+    <a class="navbar-brand-custom" href="index.html">AccesoSeguro</a>
+    <div class="navbar-links" id="nav-links"></div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="wrap">
+    <div class="page-header">
+      <h1>Verificación de acceso</h1>
+      <p>Buscá por DNI o patente para validar el ingreso o egreso</p>
+    </div>
+
+    <div class="panel-card" style="max-width:560px">
+      <form id="form-buscar">
+        <div class="mb-field">
+          <label>Ingresá el DNI o la patente a verificar</label>
+          <input class="form-control" type="text" id="input-busqueda" required>
+        </div>
+        <button type="submit" class="btn-primary-custom">Buscar</button>
+      </form>
+      <div id="resultado"></div>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+requireRole([ROLES.PORTERO]);
+renderNav();
+
+async function buscar() {
+  const busqueda = document.getElementById("input-busqueda").value.trim();
+  const cont = document.getElementById("resultado");
+  cont.innerHTML = "<p style='margin-top:1rem;color:var(--texto-sec)'>Buscando...</p>";
+  try {
+    const data = await apiGet(`/api/verificacion?busqueda=${encodeURIComponent(busqueda)}`);
+    if (!data.autorizado) {
+      cont.innerHTML = `
+        <div class="result-box result-fail">
+          <h3>❌ Acceso no autorizado</h3>
+          <p>No hay ninguna solicitud aprobada para "${busqueda}".</p>
+        </div>`;
+      return;
+    }
+    const r = data.solicitud;
+    let acciones = "";
+    if (!r.hora_ingreso) {
+      acciones += `<form style="margin-top:.75rem" onsubmit="return registrar(event, ${r.id}, 'ingreso')"><button type="submit" class="btn-approve">Registrar ingreso</button></form>`;
+    } else if (!r.hora_egreso) {
+      acciones += `<form style="margin-top:.5rem" onsubmit="return registrar(event, ${r.id}, 'egreso')"><button type="submit" class="btn-primary-custom">Registrar egreso</button></form>`;
+    }
+    cont.innerHTML = `
+      <div class="result-box result-ok">
+        <h3>✅ Acceso autorizado</h3>
+        <p><b>Nombre:</b> ${r.nombre_solicitante}</p>
+        <p><b>Sede:</b> ${r.sede ? r.sede.nombre : "-"}</p>
+        <p><b>Empresa:</b> ${r.empresa || "-"}</p>
+        <p><b>Motivo:</b> ${r.motivo || "-"}</p>
+        ${r.hora_ingreso ? `<p><b>Ingreso registrado:</b> ${r.hora_ingreso}</p>` : ""}
+        ${r.hora_egreso ? `<p><b>Egreso registrado:</b> ${r.hora_egreso}</p>` : ""}
+        ${acciones}
+      </div>
+    `;
+  } catch (err) {
+    cont.innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+  }
+}
+
+document.getElementById("form-buscar").addEventListener("submit", (e) => {
+  e.preventDefault();
+  buscar();
+});
+
+async function registrar(e, id, tipo) {
+  e.preventDefault();
+  try {
+    await apiPostJSON(`/api/solicitudes/${id}/${tipo}`, {});
+    buscar();
+  } catch (err) {
+    alert("No se pudo registrar: " + err.message);
+  }
+  return false;
+}
+</script>
+</body>
+</html>

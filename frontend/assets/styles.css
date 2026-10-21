@@ -1,0 +1,201 @@
+:root{
+  --azul-oscuro:#0F1E3D;
+  --azul-medio:#2954C8;
+  --bg:#F7F8FA;
+  --card:#FFFFFF;
+  --texto:#0F1E3D;
+  --texto-sec:#6B7280;
+  --icon-bg:#EEF2FF;
+  --sombra:0 1px 3px rgba(0,0,0,0.06), 0 8px 24px rgba(15,30,61,0.06);
+  --sombra-hover:0 2px 6px rgba(0,0,0,0.08), 0 18px 40px rgba(15,30,61,0.14);
+  --verde:#16A34A;
+  --rojo:#DC2626;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg);
+  color:var(--texto);
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1100px;margin:0 auto;padding-left:1.5rem;padding-right:1.5rem}
+
+/* --- Navbar --- */
+.navbar-custom{background-color:var(--azul-oscuro);padding:1rem 0}
+.navbar-custom .wrap{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem}
+.navbar-brand-custom{color:#fff;font-weight:800;font-size:1.25rem;text-decoration:none;letter-spacing:-.01em}
+.navbar-links{display:flex;flex-wrap:wrap;gap:.35rem}
+.navbar-links a{
+  color:rgba(255,255,255,.75);text-decoration:none;font-size:.85rem;font-weight:600;
+  padding:.45rem .8rem;border-radius:8px;transition:background .2s ease, color .2s ease;white-space:nowrap;
+}
+.navbar-links a:hover{background:rgba(255,255,255,.1);color:#fff}
+
+/* --- Header tipo "hero" (home / login) --- */
+.site-header{
+  position:relative;
+  background-color:var(--azul-oscuro);
+  min-height:220px;
+  display:flex;
+  align-items:center;
+  overflow:hidden;
+}
+.site-header::before{
+  content:"";
+  position:absolute;inset:0;
+  opacity:.05;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'><g fill='none' stroke='%23ffffff' stroke-width='1'><path d='M0 20h40M20 0v40'/></g><circle cx='20' cy='20' r='1.5' fill='%23ffffff'/></svg>");
+  background-size:40px 40px;
+}
+.site-header .wrap{position:relative;padding-top:3.5rem;padding-bottom:3.5rem;width:100%}
+.pill{
+  display:inline-block;
+  background:var(--azul-medio);
+  color:#fff;
+  font-size:.78rem;
+  font-weight:600;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  padding:.4rem 1rem;
+  border-radius:999px;
+  margin-bottom:1.25rem;
+}
+.site-header h1{
+  font-size:2.75rem;
+  font-weight:800;
+  letter-spacing:-.02em;
+  color:#fff;
+  margin:0 0 .75rem;
+}
+.site-header p{
+  font-size:1.05rem;
+  color:rgba(255,255,255,.85);
+  margin:0;
+  max-width:620px;
+  line-height:1.6;
+}
+
+/* --- Cards de pasos (home) --- */
+.steps{padding:3rem 0}
+.steps .row{margin-left:-.75rem;margin-right:-.75rem;display:flex;flex-wrap:wrap}
+.steps [class*="col-"]{padding:.75rem;display:flex;flex:1 1 320px;max-width:400px}
+.card-step{
+  background:var(--card);
+  border-radius:16px;
+  padding:2rem;
+  box-shadow:var(--sombra);
+  width:100%;
+  display:flex;
+  flex-direction:column;
+  transition:transform .25s ease, box-shadow .25s ease;
+}
+.card-step:hover{transform:translateY(-4px);box-shadow:var(--sombra-hover)}
+.step-num{
+  font-size:.72rem;
+  font-weight:600;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--texto-sec);
+  margin-bottom:.5rem;
+}
+.card-step h2{font-size:1.2rem;font-weight:700;color:var(--texto);margin:0 0 .75rem;letter-spacing:-.01em}
+.card-step p{font-size:.95rem;line-height:1.6;color:var(--texto-sec);margin:0 0 1.75rem}
+.btn-step{
+  align-self:flex-start;
+  margin-top:auto;
+  display:inline-flex;
+  align-items:center;
+  gap:.5rem;
+  background:var(--azul-oscuro);
+  color:#fff;
+  font-size:.9rem;
+  font-weight:600;
+  text-decoration:none;
+  padding:.6rem 1.4rem;
+  border-radius:8px;
+  transition:background .2s ease;
+}
+.btn-step:hover{background:#16294F;color:#fff}
+.btn-step .arrow{transition:transform .2s ease}
+.btn-step:hover .arrow{transform:translateX(4px)}
+
+/* --- Selector de rol (login) --- */
+.row-roles{display:flex;gap:1.5rem;flex-wrap:wrap;padding-top:2.5rem}
+.card-role{
+  flex:1 1 280px;
+  text-align:left;
+  background:var(--card);
+  border:2px solid transparent;
+  border-radius:16px;
+  padding:1.75rem;
+  box-shadow:var(--sombra);
+  cursor:pointer;
+  transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+  font-family:inherit;
+}
+.card-role:hover{transform:translateY(-4px);box-shadow:var(--sombra-hover);border-color:var(--azul-medio)}
+.card-role h2{font-size:1.15rem;font-weight:700;margin:0 0 .5rem;color:var(--texto)}
+.card-role p{font-size:.92rem;color:var(--texto-sec);margin:0;line-height:1.55}
+.nota-rol{margin-top:1.5rem;font-size:.82rem;color:var(--texto-sec)}
+
+/* --- Contenido de páginas internas --- */
+.page-header{padding:2.5rem 0 1.5rem}
+.page-header h1{font-size:1.85rem;font-weight:800;margin:0 0 .35rem;letter-spacing:-.02em}
+.page-header p{color:var(--texto-sec);margin:0;font-size:.98rem}
+.content{padding-bottom:4rem}
+.panel-card{background:var(--card);border-radius:16px;padding:2rem;box-shadow:var(--sombra)}
+
+label{font-weight:600;font-size:.85rem;color:var(--texto);margin-bottom:.35rem;display:block}
+.form-control, .form-select{
+  width:100%;border-radius:8px;border:1px solid #E2E5EA;padding:.6rem .85rem;font-size:.95rem;
+  font-family:inherit;background:#fff;
+}
+.form-control:focus, .form-select:focus{outline:none;border-color:var(--azul-medio);box-shadow:0 0 0 3px rgba(41,84,200,.15)}
+.mb-field{margin-bottom:1.25rem}
+
+.btn-primary-custom{background:var(--azul-oscuro);border:none;color:#fff;font-weight:600;font-size:.92rem;padding:.65rem 1.5rem;border-radius:8px;transition:background .2s ease;cursor:pointer}
+.btn-primary-custom:hover{background:#16294F;color:#fff}
+
+.btn-approve{background:var(--verde);border:none;color:#fff;font-weight:600;font-size:.85rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer}
+.btn-approve:hover{background:#128a3e;color:#fff}
+.btn-reject{background:var(--rojo);border:none;color:#fff;font-weight:600;font-size:.85rem;padding:.5rem 1.1rem;border-radius:8px;margin-left:.4rem;cursor:pointer}
+.btn-reject:hover{background:#b91c1c;color:#fff}
+
+.alert-success-custom{background:#EAF7EE;border:1px solid #BEE8CB;color:#0B4F2A;border-radius:10px;padding:1rem 1.25rem;font-size:.92rem;font-weight:600}
+
+.result-box{border-radius:12px;padding:1.5rem;margin-top:1.5rem}
+.result-ok{background:#EAF7EE;border:1px solid #BEE8CB}
+.result-fail{background:#FDECEC;border:1px solid #F5C2C2}
+.result-box h3{font-size:1.1rem;font-weight:800;margin:0 0 .75rem}
+.result-ok h3{color:#0B4F2A}
+.result-fail h3{color:#7A1F1F}
+.result-box p{margin:.15rem 0;font-size:.92rem;color:var(--texto)}
+.result-box p b{color:var(--texto-sec);font-weight:600}
+
+table.custom-table{width:100%;border-collapse:collapse;font-size:.9rem}
+table.custom-table thead th{text-align:left;color:var(--texto-sec);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;padding:.75rem .9rem;border-bottom:2px solid #EEF0F3}
+table.custom-table tbody td{padding:.85rem .9rem;border-bottom:1px solid #EEF0F3;vertical-align:middle}
+table.custom-table tbody tr:hover{background:#FAFBFC}
+
+.badge-estado{display:inline-block;padding:.3rem .7rem;border-radius:999px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.badge-pendiente{background:#FEF3E2;color:#92400E}
+.badge-aprobada{background:#EAF7EE;color:#0B4F2A}
+.badge-rechazada{background:#FDECEC;color:#7A1F1F}
+.badge-vencida{background:#F1F1F3;color:#4B5563}
+
+.empty-state{text-align:center;padding:3rem 1rem;color:var(--texto-sec)}
+.link-doc{color:var(--azul-medio);font-weight:600;text-decoration:none;font-size:.85rem}
+.link-doc:hover{text-decoration:underline}
+
+.list-clean{list-style:none;margin:0;padding:0}
+.list-clean li{background:var(--card);border-radius:10px;padding:.9rem 1.1rem;margin-bottom:.6rem;box-shadow:var(--sombra);font-size:.9rem}
+.list-clean li .meta{color:var(--texto-sec);font-size:.78rem;margin-bottom:.15rem}
+
+.site-footer{border-top:1px solid #E5E7EB;padding:2rem 0;margin-top:1rem}
+.site-footer p{margin:0;font-size:.875rem;color:var(--texto-sec)}
+
+@media (max-width:767.98px){
+  .navbar-custom .wrap{flex-direction:column;align-items:flex-start}
+  .site-header h1{font-size:2.1rem}
+}

@@ -37,7 +37,7 @@ output "docker_push_commands" {
   description = "Comandos para construir y subir la imagen de la API."
   value = join("\n", [
     "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${split("/", module.ecr.repository_url)[0]}",
-    "docker build --platform linux/amd64 -t ${module.ecr.repository_url}:${var.api_image_tag} ../../app",
+    "docker build --platform linux/amd64 -t ${module.ecr.repository_url}:${var.api_image_tag} ../../backend",
     "docker push ${module.ecr.repository_url}:${var.api_image_tag}",
     "aws ecs update-service --cluster ${aws_ecs_cluster.main.name} --service ${aws_ecs_service.api.name} --force-new-deployment --region ${var.region}",
   ])
@@ -94,4 +94,9 @@ output "network" {
     vpc_id  = module.network.vpc_id
     subnets = module.network.subnets
   }
+}
+
+output "notificaciones_topic_arn" {
+  description = "Tópico SNS que manda las notificaciones por mail."
+  value       = aws_sns_topic.notificaciones_mail.arn
 }

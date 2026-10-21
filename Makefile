@@ -3,7 +3,7 @@ TF_DIR      := terraform
 BOOTSTRAP   := $(TF_DIR)/bootstrap
 INFRA       := $(TF_DIR)/infra
 
-.PHONY: help bootstrap init validate plan apply image destroy fmt outputs
+.PHONY: help bootstrap init validate plan apply image destroy fmt outputs grupo
 
 help:            ## Lista los comandos
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-10s %s\n", $$1, $$2}'
@@ -27,8 +27,11 @@ plan:            ## Muestra qué va a cambiar
 apply:           ## Aplica el último plan
 	cd $(INFRA) && terraform apply tfplan
 
-image:           ## Paso 3: construye y sube la imagen de la API a ECR
+image:           ## Construye y sube la imagen de backend/ a ECR (tag de terraform.tfvars)
 	./scripts/push-image.sh
+
+grupo:           ## Asigna rol: make grupo EMAIL=x@y.com GRUPO=porteros SEDE=1
+	python3 scripts/asignar-rol.py --usuario "$(EMAIL)" --grupo "$(GRUPO)" $(if $(SEDE),--sede "$(SEDE)",)
 
 outputs:         ## Muestra URLs y nombres útiles
 	cd $(INFRA) && terraform output

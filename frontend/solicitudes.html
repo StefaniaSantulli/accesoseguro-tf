@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Todas las solicitudes — AccesoSeguro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar-custom">
+  <div class="wrap">
+    <a class="navbar-brand-custom" href="index.html">AccesoSeguro</a>
+    <div class="navbar-links" id="nav-links"></div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="wrap">
+    <div class="page-header">
+      <h1>Todas las solicitudes</h1>
+      <p>Listado completo, incluye resueltas y vencidas</p>
+    </div>
+    <div class="panel-card">
+      <div id="tabla-container">Cargando...</div>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+requireRole([ROLES.PORTERO, ROLES.RESPONSABLE]);
+renderNav();
+
+async function cargar() {
+  const cont = document.getElementById("tabla-container");
+  try {
+    const solicitudes = await apiGet("/api/solicitudes");
+    if (solicitudes.length === 0) {
+      cont.innerHTML = '<div class="empty-state">No hay solicitudes cargadas.</div>';
+      return;
+    }
+    cont.innerHTML = `
+      <div style="overflow-x:auto">
+      <table class="custom-table">
+        <thead><tr><th>Nombre</th><th>DNI</th><th>Sede</th><th>Estado</th></tr></thead>
+        <tbody>
+          ${solicitudes.map((s) => `
+            <tr>
+              <td>${s.nombre_solicitante}</td>
+              <td>${s.dni}</td>
+              <td>${s.sede ? s.sede.nombre : "-"}</td>
+              <td><span class="badge-estado badge-${s.estado}">${s.estado}</span></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      </div>
+    `;
+  } catch (err) {
+    cont.innerHTML = `<div class="empty-state">Error al cargar: ${err.message}</div>`;
+  }
+}
+
+cargar();
+</script>
+</body>
+</html>

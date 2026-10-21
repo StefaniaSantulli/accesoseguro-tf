@@ -215,14 +215,24 @@ locals {
         EVENT_PREFIX = "eventos/"
       }
     }
+    gestionar-usuarios = {
+      description = "Consulta el perfil de Cognito y habilita altas como transportista"
+      timeout     = 10
+      memory_size = 128
+      in_vpc      = false
+      environment = {
+        USER_POOL_ID             = aws_cognito_user_pool.main.id
+        NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
+      }
+    }
     notificar-mail = {
-      description = "Arma el mail según el evento y lo manda con SES"
+      description = "Arma el aviso según el evento y lo publica en el tópico SNS de mails"
       timeout     = 30
       memory_size = 128
       in_vpc      = false
       environment = {
-        SES_SENDER = var.ses_sender_email
-        SITE_URL   = local.site_url
+        NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
+        SITE_URL                 = local.site_url
       }
     }
   }
@@ -230,10 +240,14 @@ locals {
   # ---------------------------------------------------------------------------
   # Cognito
   # ---------------------------------------------------------------------------
+  # Tres roles de aplicación. No se asignan roles IAM a los usuarios.
+  # El grupo anterior se conserva para migrar usuarios sin borrar membresías;
+  # Flask no le otorga permisos. El operador debe reasignar cada usuario.
   cognito_groups = {
-    responsables_sede = { precedence = 10, description = "Aprueban o rechazan solicitudes de su sede" }
-    porteria          = { precedence = 20, description = "Registran ingresos y egresos en su sede" }
-    administradores   = { precedence = 1, description = "Crean usuarios y asignan grupos, sedes y empresas" }
+    transportistas    = { precedence = 20, description = "Cargan solicitudes de acceso y suben su documentacion" }
+    porteros          = { precedence = 10, description = "Verifican y registran ingresos y egresos en su sede" }
+    responsables_sede = { precedence = 5, description = "Aprueban solicitudes y consultan reportes y auditoria de su sede" }
+    administradores   = { precedence = 99, description = "LEGADO sin permisos en la aplicacion; migrar a uno de los tres grupos" }
   }
 
   cognito_domain_prefix = format("%s-%s", local.name_prefix, local.account_id)
@@ -268,6 +282,7 @@ locals {
     SNS_TOPIC_ARN        = aws_sns_topic.eventos_solicitud.arn
     DOCS_BUCKET          = local.bucket_names["documentos"]
     REPORT_LAMBDA_NAME   = module.lambdas["generar-reporte"].function_name
+    ROLES_LAMBDA_NAME    = module.lambdas["gestionar-usuarios"].function_name
     PRESIGNED_URL_TTL    = tostring(var.presigned_url_ttl_seconds)
     CORS_ALLOWED_ORIGIN  = local.site_url
     MAX_PDF_SIZE_MB      = tostring(var.max_pdf_size_mb)

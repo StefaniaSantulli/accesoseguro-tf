@@ -4,11 +4,13 @@ project_name = "accesoseguro"
 environment  = "dev"
 
 # Versión de la imagen de la API que corre ECS (nunca latest).
-api_image_tag = "v1.0"
+api_image_tag = "v1.1"
 
-# SES en sandbox: el remitente y los destinatarios tienen que estar verificados.
-ses_sender_email    = "equipo.accesoseguro@gmail.com"
-ses_verified_emails = ["transportista.prueba@gmail.com", "responsable.prueba@gmail.com"]
+# Notificaciones por mail con SNS (cada mail confirma la suscripción).
+# transportista/portero = solo sus avisos; responsable-sede-N = solicitudes de su sede
+notificaciones_suscriptores = {
+  "responsable.prueba@gmail.com" = "responsable-sede-1"
+}
 
 # Mail que recibe las alarmas (vacío = sin suscripción).
 alarm_email = ""

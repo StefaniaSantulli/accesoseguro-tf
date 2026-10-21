@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AccesoSeguro — Activar cuenta</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <span class="pill">Primer ingreso</span>
+    <h1>Activá tu cuenta</h1>
+    <p>Activar cuenta. Se elige una sola vez.</p>
+  </div>
+</header>
+
+<main class="steps">
+  <div class="wrap">
+    <div id="mensaje" class="alert-success-custom mb-field" style="display:none"></div>
+    <div class="row-roles">
+      <button class="card-role" type="button" onclick="elegir('transportistas')">
+        <h2>Soy transportista</h2>
+        <p>Cargo solicitudes de acceso a las plantas, subo mi documentación y consulto su estado.</p>
+      </button>
+      <button class="card-role" type="button" onclick="refrescarSesion()">
+        <h2>Ya me asignaron un rol</h2><p>Actualizar mi sesión para cargar los permisos asignados.</p>
+      </button>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+// Sin sesión -> login. Con rol ya elegido -> inicio.
+const rolActual = getRole();
+if (!rolActual) window.location.href = "login.html";
+else if (![ROLES.SIN_ROL, ROLES.INVALIDO].includes(rolActual)) window.location.href = "index.html";
+
+if (rolActual === ROLES.INVALIDO) {
+  document.querySelector("button[onclick*=elegir]").disabled = true;
+  const aviso = document.getElementById("mensaje");
+  aviso.style.display = "block";
+  aviso.textContent = "Tu cuenta tiene un rol anterior o varios roles. El operador debe asignarte uno de los tres roles actuales.";
+}
+let enviando = false;
+async function elegir(grupo) {
+  if (enviando) return;
+  enviando = true;
+  const msg = document.getElementById("mensaje");
+  msg.style.display = "block";
+  msg.textContent = "Guardando tu rol...";
+  try {
+    await apiPostJSON("/api/mi-rol", { grupo });
+    msg.textContent = "Listo. Actualizando tu sesión...";
+  } catch (err) {
+    msg.textContent = err.message;
+    enviando = false;
+    return;
+  }
+  // El grupo nuevo recién viaja en un token nuevo.
+  setTimeout(refrescarSesion, 1200);
+}
+</script>
+</body>
+</html>

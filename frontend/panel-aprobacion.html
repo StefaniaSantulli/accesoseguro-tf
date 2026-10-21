@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel de aprobación — AccesoSeguro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar-custom">
+  <div class="wrap">
+    <a class="navbar-brand-custom" href="index.html">AccesoSeguro</a>
+    <div class="navbar-links" id="nav-links"></div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="wrap">
+    <div class="page-header">
+      <h1>Panel de aprobación</h1>
+      <p>Solicitudes pendientes de revisión</p>
+    </div>
+    <div class="panel-card">
+      <div id="tabla-container">Cargando...</div>
+    </div>
+    <p style="margin-top:1.25rem"><a class="link-doc" href="solicitudes.html">Ver todas las solicitudes (incluye resueltas)</a></p>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+requireRole([ROLES.RESPONSABLE]);
+renderNav();
+
+async function cargarPendientes() {
+  const cont = document.getElementById("tabla-container");
+  try {
+    const pendientes = await apiGet("/api/solicitudes/pendientes");
+    if (pendientes.length === 0) {
+      cont.innerHTML = '<div class="empty-state">No hay solicitudes pendientes.</div>';
+      return;
+    }
+    cont.innerHTML = `
+      <div style="overflow-x:auto">
+      <table class="custom-table">
+        <thead>
+          <tr><th>Nombre</th><th>DNI</th><th>Patente</th><th>Empresa</th><th>Motivo</th><th>Sede</th><th>Documento</th><th>Acción</th></tr>
+        </thead>
+        <tbody>
+          ${pendientes.map((s) => `
+            <tr>
+              <td>${s.nombre_solicitante}</td>
+              <td>${s.dni}</td>
+              <td>${s.patente || "-"}</td>
+              <td>${s.empresa || "-"}</td>
+              <td>${s.motivo || "-"}</td>
+              <td>${s.sede ? s.sede.nombre : "-"}</td>
+              <td>
+                ${s.url_documento
+                  ? `<a class="link-doc" href="${s.url_documento}" target="_blank" rel="noopener">Ver documento</a>`
+                  : '<span style="color:var(--texto-sec);font-size:.85rem">Sin documento</span>'}
+              </td>
+              <td>
+                <input type="text" placeholder="Motivo (opcional)" class="form-control motivo-input" data-id="${s.id}" style="margin-bottom:.4rem;font-size:.82rem;padding:.4rem .6rem">
+                <button class="btn-approve" onclick="resolver(${s.id}, 'aprobada')">Aprobar</button>
+                <button class="btn-reject" onclick="resolver(${s.id}, 'rechazada')">Rechazar</button>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      </div>
+    `;
+  } catch (err) {
+    cont.innerHTML = `<div class="empty-state">Error al cargar: ${err.message}</div>`;
+  }
+}
+
+async function resolver(id, accion) {
+  const input = document.querySelector(`.motivo-input[data-id="${id}"]`);
+  const motivo_decision = input ? input.value : "";
+  try {
+    await apiPostJSON(`/api/solicitudes/${id}/resolver`, { accion, motivo_decision });
+    cargarPendientes();
+  } catch (err) {
+    alert("No se pudo resolver la solicitud: " + err.message);
+  }
+}
+
+cargarPendientes();
+</script>
+</body>
+</html>

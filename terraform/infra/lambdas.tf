@@ -1,5 +1,5 @@
 # =============================================================================
-# CÓMPUTO ASINCRÓNICO: las 6 Lambdas con UNA sola llamada al módulo propio.
+# CÓMPUTO ASINCRÓNICO: las 7 Lambdas con UNA sola llamada al módulo propio.
 # =============================================================================
 
 module "lambdas" {

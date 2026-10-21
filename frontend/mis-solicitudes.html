@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mis solicitudes — AccesoSeguro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar-custom">
+  <div class="wrap">
+    <a class="navbar-brand-custom" href="index.html">AccesoSeguro</a>
+    <div class="navbar-links" id="nav-links"></div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="wrap">
+    <div class="page-header">
+      <h1>Mis solicitudes</h1>
+      <p>Consultá el estado de tus solicitudes buscando por tu DNI</p>
+    </div>
+
+    <div class="panel-card" style="max-width:560px">
+      <form id="form-buscar">
+        <div class="mb-field">
+          <label>Ingresá tu DNI</label>
+          <input class="form-control" type="text" id="input-dni" required>
+        </div>
+        <button type="submit" class="btn-primary-custom">Buscar</button>
+      </form>
+      <div id="resultados"></div>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+requireRole([ROLES.TRANSPORTISTA]);
+renderNav();
+
+document.getElementById("form-buscar").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const dni = document.getElementById("input-dni").value.trim();
+  const cont = document.getElementById("resultados");
+  cont.innerHTML = "<p style='margin-top:1rem;color:var(--texto-sec)'>Buscando...</p>";
+  try {
+    const solicitudes = await apiGet(`/api/mis-solicitudes?dni=${encodeURIComponent(dni)}`);
+    if (solicitudes.length === 0) {
+      cont.innerHTML = '<div class="empty-state">No encontramos solicitudes con ese DNI.</div>';
+      return;
+    }
+    cont.innerHTML = solicitudes.map((s) => `
+      <div class="result-box ${s.estado === "aprobada" ? "result-ok" : s.estado === "rechazada" ? "result-fail" : ""}" style="margin-top:1rem">
+        <h3>Solicitud #${s.id} ${s.sede ? "— " + s.sede.nombre : ""}</h3>
+        <p><b>Estado:</b> <span class="badge-estado badge-${s.estado}">${s.estado}</span></p>
+        <p><b>Motivo:</b> ${s.motivo || "-"}</p>
+        ${s.motivo_decision ? `<p><b>Motivo de la decisión:</b> ${s.motivo_decision}</p>` : ""}
+        ${s.hora_ingreso ? `<p><b>Ingreso registrado:</b> ${s.hora_ingreso}</p>` : ""}
+        ${s.hora_egreso ? `<p><b>Egreso registrado:</b> ${s.hora_egreso}</p>` : ""}
+      </div>
+    `).join("");
+  } catch (err) {
+    cont.innerHTML = `<div class="empty-state">Error al buscar: ${err.message}</div>`;
+  }
+});
+</script>
+</body>
+</html>

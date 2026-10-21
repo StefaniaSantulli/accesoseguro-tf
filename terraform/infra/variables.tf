@@ -60,9 +60,9 @@ variable "interface_endpoints" {
 # Cómputo: ECS Fargate
 # =============================================================================
 variable "api_image_tag" {
-  description = "Versión de la imagen de la API en ECR (nunca latest)."
+  description = "Versión de la imagen de la API en ECR (nunca latest). Los tags son inmutables: cada cambio de la API lleva un tag nuevo."
   type        = string
-  default     = "v1.0"
+  default     = "v1.1"
 
   validation {
     condition     = var.api_image_tag != "latest"
@@ -231,16 +231,15 @@ variable "documentos_lifecycle" {
 # =============================================================================
 # Eventos y mails
 # =============================================================================
-variable "ses_sender_email" {
-  description = "Remitente de los mails (SES). En sandbox tiene que estar verificado. Vacío = no se crea identidad."
-  type        = string
-  default     = ""
-}
+variable "notificaciones_suscriptores" {
+  description = "Mail => destinatario: transportista o portero (solo sus avisos), responsable-sede-N (también solicitudes de la sede N). Confirmar el correo SNS."
+  type        = map(string)
+  default     = {}
 
-variable "ses_verified_emails" {
-  description = "Direcciones a verificar en SES (en sandbox solo se puede mandar a estas)."
-  type        = list(string)
-  default     = []
+  validation {
+    condition     = alltrue([for rol in values(var.notificaciones_suscriptores) : can(regex("^(transportista|portero|responsable-sede-[1-9][0-9]*)$", rol))])
+    error_message = "Usar transportista, portero o responsable-sede-N, con N como ID positivo de sede."
+  }
 }
 
 variable "alarm_email" {

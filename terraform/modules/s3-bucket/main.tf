@@ -26,6 +26,8 @@ locals {
     Resource  = "${local.arn}/*"
   }
 
+  # Se filtra con "for ... if" en vez de un condicional (a ? b : c) porque los
+  # dos statements tienen formas distintas y el condicional exige el mismo tipo.
   policy_statements = concat(
     [for s in [local.public_read] : s if var.website],
     [for s in [local.deny_insecure_transport] : s if !var.website],

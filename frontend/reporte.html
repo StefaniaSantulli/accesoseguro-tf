@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reporte histórico — AccesoSeguro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar-custom">
+  <div class="wrap">
+    <a class="navbar-brand-custom" href="index.html">AccesoSeguro</a>
+    <div class="navbar-links" id="nav-links"></div>
+  </div>
+</nav>
+
+<div class="content">
+  <div class="wrap">
+    <div class="page-header">
+      <h1>Reporte histórico de accesos</h1>
+      <p>Exportá un listado filtrado por sede y rango de fechas</p>
+    </div>
+
+    <div class="panel-card" style="max-width:520px">
+      <form id="form-reporte">
+        <div class="mb-field">
+          <label>Sede</label>
+          <select class="form-select" id="select-sede">
+            <option value="">Mi sede</option>
+          </select>
+        </div>
+        <div class="mb-field"><label>Desde</label><input class="form-control" type="date" id="input-desde"></div>
+        <div class="mb-field"><label>Hasta</label><input class="form-control" type="date" id="input-hasta"></div>
+        <button type="submit" class="btn-primary-custom">Descargar CSV</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
+<script>
+requireRole([ROLES.RESPONSABLE]);
+renderNav();
+
+async function cargarSedes() {
+  try {
+    const sedes = await apiGet("/api/sedes");
+    const select = document.getElementById("select-sede");
+    select.innerHTML = '<option value="">Mi sede</option>' + sedes.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join("");
+  } catch (err) {
+    console.error("No se pudieron cargar las sedes:", err);
+  }
+}
+cargarSedes();
+
+document.getElementById("form-reporte").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const sedeId = document.getElementById("select-sede").value;
+  const desde = document.getElementById("input-desde").value;
+  const hasta = document.getElementById("input-hasta").value;
+  const params = new URLSearchParams();
+  if (sedeId) params.set("sede_id", sedeId);
+  if (desde) params.set("desde", desde);
+  if (hasta) params.set("hasta", hasta);
+  // Se descarga con fetch para poder mandar el token de Cognito.
+  apiDownload(`/api/reporte/exportar?${params.toString()}`, "reporte_accesos.csv")
+    .catch((err) => alert("No se pudo generar el reporte: " + err.message));
+});
+</script>
+</body>
+</html>

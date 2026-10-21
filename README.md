@@ -5,7 +5,7 @@
 Este repositorio levanta con Terraform la arquitectura de **AccesoSeguro** (versión del
 17/10/2026, con la devolución de la cátedra del 16/10): sitio estático en S3, login con la
 Hosted UI de Cognito, API Flask en ECS Fargate detrás de un ALB, RDS PostgreSQL Multi-AZ,
-6 Lambdas, SNS + SQS con DLQ, EventBridge y SES. Sin EC2 y sin NAT Gateway.
+7 Lambdas, SNS + SQS con DLQ y EventBridge; los avisos por mail salen por SNS. Sin EC2 y sin NAT Gateway.
 
 ---
 
@@ -49,9 +49,9 @@ espera. La tabla DynamoDB del método clásico queda como opción (`create_dynam
 │       ├── lambda-function/          # Lambda + zip + log group
 │       ├── sqs-with-dlq/             # cola + DLQ + alarma
 │       └── s3-bucket/                # bucket compatible con el Learner Lab
-├── lambdas/<nombre>/handler.py       # código de las 6 Lambdas
-├── app/                              # API Flask + Dockerfile (imagen de ECS)
-├── frontend/                         # sitio estático + config.js.tftpl
+├── lambdas/<nombre>/handler.py       # código de las 7 Lambdas
+├── backend/                          # API Flask + Dockerfile (imagen de ECS)
+├── frontend/                         # sitio estático (HTML/CSS/JS) + config.js.tftpl
 ├── scripts/push-image.sh             # build + push a ECR + redeploy de ECS
 ├── Makefile                          # atajos: make bootstrap / init / plan / apply / image
 ├── architecture.png                  # diagrama actualizado
@@ -84,7 +84,7 @@ flowchart LR
   end
   ECS -->|publica| SNS[SNS eventos-solicitud]
   SNS --> QA[SQS auditoría] --> LAUD[Lambda archivar-auditoria] --> S3A[S3 auditoría]
-  SNS --> QN[SQS notificaciones] --> LMAIL[Lambda notificar-mail] --> SES
+  SNS --> QN[SQS notificaciones] --> LMAIL[Lambda notificar-mail] --> SNSMAIL[SNS notificaciones-mail: mail]
   S3D[S3 documentos] -->|PDF nuevo| QD[SQS documentos] --> LVAL
   EB[EventBridge 15 min] --> LVEN --> SNS
 ```
@@ -92,11 +92,11 @@ flowchart LR
 | Capa (PDF) | Servicio | Archivo | Recursos principales |
 |---|---|---|---|
 | Front | S3 sitio estático | `frontend.tf` | `aws_s3_bucket.sitio`, website, policy pública de lectura, `aws_s3_object` |
-| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 grupos, dominio, app client, HTTP API |
+| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 roles (transportistas, porteros y responsables_sede; grupo anterior conservado sin permisos), dominio, app client, HTTP API |
 | Entrada | Internet Gateway + ALB | `modules/network`, `alb.tf` | IGW, `aws_lb`, target group tipo `ip`, listener 80 |
-| Cómputo | ECS Fargate, ECR, 6 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
+| Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
 | Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
-| Eventos | SNS, SQS + DLQ, EventBridge, SES | `messaging.tf`, `lambdas.tf` | tópico, `module.sqs`, suscripciones, regla cada 15 min |
+| Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópico, `module.sqs`, suscripciones, regla cada 15 min |
 | Seguridad | VPC, SG, NACL, Secrets Manager, KMS, LabRole, CloudTrail | `network.tf`, `security.tf` | SG encadenados, NACL datos, clave KMS, secretos |
 | Operación | CloudWatch, Auto Scaling | `monitoring.tf`, `ecs.tf` | alarmas (5xx, tasks sanas, DLQ, errores Lambda, RDS) |
 
@@ -117,7 +117,7 @@ Security Groups encadenados: `alb` (80 desde internet) → `ecs` (5000 solo desd
 | Módulo | Tipo | Para qué | Cómo se usa |
 |---|---|---|---|
 | `modules/network` | **Propio** | VPC en 3 capas x 2 AZ, IGW, tablas de ruteo y NACL | Una vez, en `network.tf` |
-| `modules/lambda-function` | **Propio** | Empaquetar y crear una Lambda con su log group | Una llamada con `for_each` crea las 6 |
+| `modules/lambda-function` | **Propio** | Empaquetar y crear una Lambda con su log group | Una llamada con `for_each` crea las 7 |
 | `modules/sqs-with-dlq` | **Propio** | Cola + DLQ + alarma | Una llamada con `for_each` crea las 3 colas |
 | `modules/s3-bucket` | **Propio** | Bucket con cifrado, versionado, políticas, lifecycle, CORS y website, compatible con el Learner Lab | `for_each` (documentos y auditoría), una vez para el sitio y con `count` para CloudTrail |
 | `terraform-aws-modules/ecr/aws` `~> 2.0` | **Externo** (Terraform Registry) | Repositorio ECR con tags inmutables, escaneo, cifrado KMS y lifecycle policy | Una vez, en `ecs.tf` |
@@ -201,7 +201,7 @@ puede importar con `terraform import aws_s3_bucket.tfstate <nombre>`.
 ### Paso 2 — Infraestructura
 ```bash
 cd ../infra
-cp terraform.tfvars.example terraform.tfvars   # completar los mails de SES
+cp terraform.tfvars.example terraform.tfvars   # completar notificaciones_suscriptores
 terraform init -backend-config=backend.hcl
 terraform validate
 terraform plan -out=tfplan
@@ -213,30 +213,36 @@ aws s3 ls s3://$(cd ../bootstrap && terraform output -raw state_bucket_name)/acc
 ```
 
 ### Paso 3 — Imagen de la API
-El servicio de ECS queda creado pero las tasks no arrancan hasta que exista la imagen
-`v1.0` en ECR. Los comandos exactos los da Terraform:
+El servicio de ECS queda creado, pero las tasks no arrancan hasta que exista en ECR la
+imagen con el tag de `api_image_tag`:
 ```bash
-terraform output -raw docker_push_commands
+make image      # construye backend/ y la sube con el tag de terraform.tfvars
+make plan
+make apply      # nueva revisión de la task definition + rolling update
 ```
-(login a ECR → `docker build` → `docker push` → `aws ecs update-service --force-new-deployment`).
-Para desplegar una versión nueva: subir `v1.1`, cambiar `api_image_tag` y `terraform apply`
-(nueva revisión de la task definition + rolling update).
+Los tags son **inmutables**: para desplegar un cambio de la API, subí `api_image_tag`
+(v1.1 → v1.2), `make image`, `make plan`, `make apply`.
 
-### Paso 4 — Probar
+### Paso 4 — Probar la aplicación
 ```bash
-terraform output sitio_url      # abrir en el navegador → "Ingresar"
-terraform output api_url        # curl <api_url>/health  → {"status":"ok"}
+make outputs    # sitio_url, api_url, login_url...
 ```
-- Confirmar los mails de verificación que manda SES (sandbox).
-- Crear usuarios de prueba y asignar grupo / empresa:
-```bash
-POOL=$(terraform output -raw cognito_user_pool_id)
-aws cognito-idp admin-add-user-to-group --user-pool-id $POOL --username <mail> --group-name responsables_sede
-aws cognito-idp admin-update-user-attributes --user-pool-id $POOL --username <mail> \
-  --user-attributes Name=custom:empresa_id,Value=EMP-001
-```
-- Probar el flujo asincrónico: subir un PDF a `s3://<bucket documentos>/empresas/EMP-001/...`
-  y ver los logs de `validar-documento` en CloudWatch.
+1. Abrir `sitio_url` → **Ingresar** → registrarse en la Hosted UI de Cognito (llega un código al mail).
+2. Un usuario sin grupo puede activar su cuenta como **transportista**. No puede elegirse personal de planta.
+3. El operador del Lab asigna los roles internos y una sede existente:
+   ```bash
+   make grupo EMAIL=portero@example.com GRUPO=porteros SEDE=1
+   make grupo EMAIL=responsable@example.com GRUPO=responsables_sede SEDE=2
+   ```
+   El script retira grupos anteriores y asigna un único rol. Luego el usuario vuelve a
+   iniciar sesión. El grupo anterior `administradores` no concede permisos.
+   Ver [Cognito y roles](docs/cognito-y-roles.md) para el workaround de clase,
+   los permisos, la migración de usuarios y las suscripciones de correo por sede.
+4. Flujo completo: el transportista crea una solicitud con PDF → el PDF sube directo a S3 →
+   S3 avisa a `cola-documentos` → Lambda `validar-documento`. La API publica el evento en SNS →
+   `cola-auditoria` (Lambda guarda el JSON en el bucket de auditoría) y `cola-notificaciones`
+   (Lambda `notificar-mail`). El responsable aprueba, portería verifica por DNI o patente y
+   registra ingreso/egreso, y todo queda en auditoría y en el reporte CSV.
 
 ### Paso 5 — Destruir (al terminar la sesión del lab)
 ```bash
@@ -280,16 +286,26 @@ el `fmt -check`.
 | No se pueden crear roles IAM | ECS y Lambdas usan `LabRole` (`data.aws_iam_role.lab_role`). Sí se escriben políticas sobre los recursos (buckets, colas, KMS) |
 | No hay CloudFront ni HTTPS en el sitio | Cognito vuelve a API Gateway `/callback` (HTTPS) y la Lambda redirige al sitio con los tokens en el `#` |
 | Las tasks no tienen salida a internet | VPC Endpoints. Las llaves públicas de Cognito (JWKS) las lee Terraform (`data.http`) y se pasan al contenedor como variable de entorno |
-| SES en sandbox | Se verifican el remitente y los destinatarios de prueba (`ses_verified_emails`) |
+| SES: el LabRole no tiene `ses:VerifyEmailIdentity`, y en sandbox SES solo manda a direcciones verificadas | Los avisos salen por **SNS por mail**: tópico `notificaciones-mail` + una suscripción por persona (`notificaciones_suscriptores`). Cada una confirma con el link que manda AWS. La Lambda publica con el atributo `destinatario` y la *filter policy* de cada suscripción hace que cada uno reciba solo lo suyo (cada responsable recibe además las solicitudes nuevas de su sede). En producción se volvería a SES con el dominio verificado |
 | CloudTrail | El historial de 90 días existe siempre; el trail propio queda detrás de `enable_cloudtrail` |
 | Se destruye y recrea seguido | `force_destroy` en buckets, `recovery_window_in_days = 0` en secretos, `skip_final_snapshot` fuera de prod |
 
-## 10. Qué es placeholder
+## 10. La aplicación
 
-- `app/`: Flask mínimo con `/health` y `/api/info` para que el despliegue funcione de punta
-  a punta. Reemplazar por la API real.
-- `frontend/`: una página de prueba (login y llamada a la API). Reemplazar por el sitio real;
-  `config.js` lo sigue generando Terraform.
-- Lambdas `validar-documento`, `vencer-permisos` y `generar-reporte`: la parte de RDS está
-  simulada (mock data, permitido por la consigna). Para conectarse de verdad hace falta un
-  driver de PostgreSQL en una Lambda Layer.
+- **`backend/`** — Flask en ECS con PostgreSQL y credenciales de Secrets Manager.
+  Valida el Access Token y consulta el perfil/grupos vigentes mediante `gestionar-usuarios`.
+  Autoriza tres roles: transportistas (solicitudes propias), porteros (ingresos/egresos
+  de su sede) y responsables_sede (aprobaciones, reportes y auditoría de su sede).
+  Los roles internos solo los asigna el operador AWS. El modo local requiere `LOCAL_DEMO=true`.
+- **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase,
+  guarda Access Token e ID Token en sessionStorage y usa solo el primero para la API.
+  Ver [guía de Cognito y roles](docs/cognito-y-roles.md).
+- **Lambdas** — `validar-documento`, `vencer-permisos` y `generar-reporte` tienen la parte de RDS
+  simulada (mock data, permitido por la consigna); el reporte CSV hoy lo genera la API.
+
+### Probar en local (sin AWS)
+```bash
+cd backend && pip3 install -r requirements.txt && LOCAL_DEMO=true python3 app.py     # terminal 1
+cd frontend && python3 -m http.server 8000                           # terminal 2
+# abrir http://localhost:8000/login.html
+```

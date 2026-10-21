@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AccesoSeguro — Ingresar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="assets/styles.css" rel="stylesheet">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <span class="pill">Sistema de gestión de accesos</span>
+    <h1>AccesoSeguro</h1>
+    <p>Control de acceso a plantas industriales.</p>
+  </div>
+</header>
+
+<main class="steps">
+  <div class="wrap">
+    <!-- En AWS: login real con Cognito -->
+    <p id="login-error" role="alert"></p>
+    <div id="login-cognito" style="display:none">
+      <div class="row-roles">
+        <button class="card-role" type="button" onclick="login()">
+          <h2>Ingresar</h2>
+          <p>Iniciá sesión o registrate con tu mail. Si sos personal de planta, el operador del proyecto te asigna el rol de portero o responsable y tu sede.</p>
+        </button>
+      </div>
+    </div>
+
+    <!-- En local (sin config.js): selector de rol de la v3 -->
+    <div id="login-local" style="display:none">
+    <div class="row-roles">
+      <button class="card-role" type="button" onclick="elegirRol('transportistas')">
+        <h2>Soy transportista</h2>
+        <p>Quiero cargar una solicitud de acceso a una planta o consultar el estado de las mías.</p>
+      </button>
+      <button class="card-role" type="button" onclick="elegirRol('porteros')">
+        <h2>Soy portero</h2><p>Verifico permisos y registro ingresos y egresos en mi sede.</p>
+      </button>
+      <button class="card-role" type="button" onclick="elegirRol('responsables_sede')">
+        <h2>Soy responsable de sede</h2><p>Apruebo solicitudes y consulto reportes y auditoría de mi sede.</p>
+      </button>
+    </div>
+    <label>Sede para la demostración <select id="demo-sede"><option value="1">Planta Central</option><option value="2">Depósito Norte</option><option value="3">Depósito Sur</option></select></label>
+    <p class="nota-rol">Demostración local. En AWS los roles internos y la sede los asigna el operador del proyecto.</p>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap"><p>AccesoSeguro — Sistema de control de acceso a plantas industriales</p></div>
+</footer>
+
+<!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
+<script src="config.js" onerror="window.APP_CONFIG = null"></script>
+<script src="assets/auth.js"></script>
+<script>
+document.getElementById("login-error").textContent = storageGet(sessionStorage, "accesoseguro_login_error") || "";
+storageDel(sessionStorage, "accesoseguro_login_error");
+if (isCognitoMode()) {
+  if (getRole()) window.location.href = "index.html"; // ya hay sesión
+  document.getElementById("login-cognito").style.display = "block";
+} else {
+  document.getElementById("login-local").style.display = "block";
+}
+
+function elegirRol(rol) {
+  setRole(rol);
+  storageSet(localStorage, "accesoseguro_demo_sede", document.getElementById("demo-sede").value);
+  window.location.href = "index.html";
+}
+</script>
+</body>
+</html>
