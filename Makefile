@@ -17,9 +17,10 @@ init:            ## Paso 2: init de la infra con el backend remoto
 fmt:             ## Formatea todo el código Terraform
 	terraform fmt -recursive $(TF_DIR)
 
-validate: fmt    ## fmt + validate de los dos proyectos
+validate:        ## Comprueba formato, inicializa y valida los dos proyectos (sin AWS)
+	terraform fmt -check -recursive $(TF_DIR)
 	cd $(BOOTSTRAP) && terraform init -backend=false -input=false && terraform validate
-	cd $(INFRA) && terraform validate
+	cd $(INFRA) && terraform init -backend=false -input=false && terraform validate
 
 plan: layer      ## Muestra qué va a cambiar
 	cd $(INFRA) && terraform plan -out=tfplan

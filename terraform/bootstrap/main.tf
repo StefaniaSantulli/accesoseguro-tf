@@ -19,9 +19,8 @@ locals {
 # -----------------------------------------------------------------------------
 # Bucket del state
 # -----------------------------------------------------------------------------
-# El bucket se crea con la AWS CLI y no con aws_s3_bucket: en el Learner Lab
-# una service control policy prohíbe s3:GetBucketObjectLockConfiguration, que
-# aws_s3_bucket lee siempre. El resto de la configuración sí es Terraform.
+# El bucket se crea con AWS CLI para conservar el workaround de Object Lock
+# del Lab utilizado. El resto de la configuración se administra con Terraform.
 resource "terraform_data" "tfstate_bucket" {
   triggers_replace = [local.state_bucket_name]
 

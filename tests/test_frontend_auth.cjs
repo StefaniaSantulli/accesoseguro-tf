@@ -97,4 +97,24 @@ async function reportDownloadTests() {
   assert.equal(run(ctx, 'escapeHtml("<script>hola</script>")'), '&lt;script&gt;hola&lt;/script&gt;');
   console.log('Reporte OK: descarga firmada sin enviar el token a S3.');
 }
-module.exports.finished = reportDownloadTests().catch(error => { process.exitCode = 1; throw error; });
+async function documentUploadTests() {
+  const ctx = browser(hash);
+  const calls = [];
+  ctx.fetch = async (url, options) => {
+    calls.push({url, options});
+    return { ok: true, status: 200, json: async () => ({ url: 'https://documents.invalid/signed' }) };
+  };
+  await run(ctx, 'subirDocumento(1, {size: 123})');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {tamano: 123});
+  assert.equal(calls[1].options.headers.Authorization, undefined);
+  calls.length = 0;
+  ctx.fetch = async (url, options) => {
+    calls.push({url, options});
+    return { ok: false, status: 400, json: async () => ({ error: 'El PDF supera el máximo' }) };
+  };
+  await assert.rejects(run(ctx, 'subirDocumento(1, {size: 999999999})'), /supera el máximo/);
+  assert.equal(calls.length, 1);
+  console.log('Documentos OK: tamaño validado antes de subir; sin token de Cognito a S3.');
+}
+module.exports.finished = Promise.all([reportDownloadTests(), documentUploadTests()])
+  .catch(error => { process.exitCode = 1; throw error; });

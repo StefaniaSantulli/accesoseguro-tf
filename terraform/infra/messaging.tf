@@ -102,3 +102,30 @@ resource "aws_sqs_queue_policy" "entrega_dlq" {
     }]
   })
 }
+
+# Conservar las colas existentes tras la unificación de recursos de v4.
+# En un despliegue nuevo estos bloques no tienen efecto.
+moved {
+  from = aws_sqs_queue.entrega_eventos_dlq["auditoria"]
+  to   = aws_sqs_queue.entrega_dlq["auditoria"]
+}
+moved {
+  from = aws_sqs_queue.entrega_eventos_dlq["notificaciones"]
+  to   = aws_sqs_queue.entrega_dlq["notificaciones"]
+}
+moved {
+  from = aws_sqs_queue.entrega_mail_dlq
+  to   = aws_sqs_queue.entrega_dlq["mail"]
+}
+moved {
+  from = aws_sqs_queue_policy.entrega_eventos_dlq["auditoria"]
+  to   = aws_sqs_queue_policy.entrega_dlq["auditoria"]
+}
+moved {
+  from = aws_sqs_queue_policy.entrega_eventos_dlq["notificaciones"]
+  to   = aws_sqs_queue_policy.entrega_dlq["notificaciones"]
+}
+moved {
+  from = aws_sqs_queue_policy.entrega_mail_dlq
+  to   = aws_sqs_queue_policy.entrega_dlq["mail"]
+}

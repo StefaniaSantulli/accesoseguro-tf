@@ -35,7 +35,7 @@ locals {
   )
 }
 
-# Crea el bucket con la CLI al aplicar y lo borra (si force_destroy) al destruir.
+# Crea y borra el bucket con la CLI; solo vacía su contenido si force_destroy.
 resource "terraform_data" "bucket" {
   # Si cambia el nombre, es otro bucket: se reemplaza.
   triggers_replace = [var.name]

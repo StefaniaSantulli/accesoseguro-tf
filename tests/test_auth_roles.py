@@ -204,6 +204,55 @@ class ApiTests(unittest.TestCase):
         with self.assertLogs(api.app.logger, level='ERROR'):
             self.assertEqual(self.client.get('/api/me', headers=self.headers()).status_code, 503)
 
+    def test_bad_input_is_rejected_without_creating_requests(self):
+        headers = self.headers()
+        valid = {'sede_id': 1, 'nombre_solicitante': 'Persona', 'dni': '123'}
+        for data in ([1], {**valid, 'dni': ''}, {**valid, 'nombre_solicitante': 'x' * 101},
+                     {**valid, 'empresa': ['incorrecto']}, {'sede_id': 1},
+                     {**valid, 'sede_id': 1.5}, {**valid, 'sede_id': True}):
+            with self.subTest(data=data):
+                response = self.client.post('/api/solicitudes', json=data, headers=headers)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('error', response.get_json())
+        with api.app.app_context():
+            self.assertEqual(api.Solicitud.query.count(), 3)
+
+    def test_maximum_decision_reason_fits_audit_and_remains_complete(self):
+        headers = self.headers('responsables_sede')
+        invalid = self.client.post('/api/solicitudes/1/resolver', headers=headers,
+                                   json={'accion': 'rechazada', 'motivo_decision': 'x' * 301})
+        self.assertEqual(invalid.status_code, 400)
+        result = self.client.post('/api/solicitudes/1/resolver', headers=headers,
+                                  json={'accion': 'rechazada', 'motivo_decision': 'x' * 300})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.get_json()['motivo_decision'], 'x' * 300)
+        logs = self.client.get('/api/auditoria', headers=headers).get_json()
+        self.assertLessEqual(len(logs[0]['detalle']), 300)
+
+    def test_repeated_entry_exit_preserve_times_and_do_not_reauthorize(self):
+        headers = self.headers('porteros')
+        entry = self.client.post('/api/solicitudes/3/ingreso', headers=headers).get_json()
+        self.assertEqual(self.client.post('/api/solicitudes/3/ingreso', headers=headers).status_code, 409)
+        exit_ = self.client.post('/api/solicitudes/3/egreso', headers=headers).get_json()
+        self.assertEqual(self.client.post('/api/solicitudes/3/egreso', headers=headers).status_code, 409)
+        self.assertEqual(self.client.post('/api/solicitudes/3/ingreso', headers=headers).status_code, 409)
+        self.assertFalse(self.client.get('/api/verificacion?busqueda=333', headers=headers).get_json()['autorizado'])
+        with api.app.app_context():
+            request_ = api.db.session.get(api.Solicitud, 3)
+            self.assertEqual(request_.hora_ingreso.isoformat(), entry['hora_ingreso'])
+            self.assertEqual(request_.hora_egreso.isoformat(), exit_['hora_egreso'])
+            self.assertEqual(api.LogAuditoria.query.count(), 2)
+
+    def test_verification_prioritizes_current_visit_over_a_new_authorization(self):
+        headers = self.headers('porteros')
+        self.client.post('/api/solicitudes/3/ingreso', headers=headers)
+        with api.app.app_context():
+            api.db.session.add(api.Solicitud(id=4, sede_id=1, dni='333', nombre_solicitante='Nueva', estado='aprobada'))
+            api.db.session.commit()
+        self.assertEqual(self.client.get('/api/verificacion?busqueda=333', headers=headers).get_json()['solicitud']['id'], 3)
+        self.client.post('/api/solicitudes/3/egreso', headers=headers)
+        self.assertEqual(self.client.get('/api/verificacion?busqueda=333', headers=headers).get_json()['solicitud']['id'], 4)
+
 
 class LambdaTests(unittest.TestCase):
     def setUp(self):

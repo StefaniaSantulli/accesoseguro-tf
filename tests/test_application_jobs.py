@@ -144,8 +144,19 @@ class ApiJobsTests(unittest.TestCase):
     setUp = auth_tests.ApiTests.setUp
     headers = auth_tests.ApiTests.headers
 
+    def test_invalid_upload_size_preserves_previous_document(self):
+        headers = self.headers()
+        original = self.client.post('/api/solicitudes/1/documento', json={'tamano': 100}, headers=headers).get_json()
+        for size in (0, -1, True, '100', None, api.MAX_PDF_SIZE_MB * 1024 * 1024 + 1):
+            with self.subTest(size=size):
+                result = self.client.post('/api/solicitudes/1/documento', json={'tamano': size}, headers=headers)
+                self.assertEqual(result.status_code, 400)
+        with api.app.app_context():
+            self.assertEqual(api.db.session.get(api.Solicitud, 1).documento_s3_key, original['key'])
+            self.assertEqual(api.db.session.execute(select(jobs.documents.c.s3_key)).scalar_one(), original['key'])
+
     def test_upload_records_pending_and_blocks_approval_until_validated(self):
-        self.assertEqual(self.client.post('/api/solicitudes/1/documento', headers=self.headers()).status_code, 200)
+        self.assertEqual(self.client.post('/api/solicitudes/1/documento', json={'tamano': 100}, headers=self.headers()).status_code, 200)
         self.current_groups = ['responsables_sede']
         headers = self.headers('responsables_sede')
         request = self.client.get('/api/solicitudes/pendientes', headers=headers).get_json()[0]

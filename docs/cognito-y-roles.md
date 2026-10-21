@@ -50,7 +50,7 @@ El operador es quien accede a la consola/CLI del Lab; no es un cuarto rol de la 
 2. En Cognito, el operador asigna el grupo y el atributo `custom:sede_id` a los usuarios internos. Debe retirar los grupos de aplicación anteriores.
 3. El usuario vuelve a iniciar sesión para obtener tokens actualizados.
 
-El script evita tener que recordar las operaciones de CLI. Se ejecuta desde la raíz del repositorio, con credenciales del Lab y Terraform ya aplicado. No se ejecuta desde el navegador:
+El script evita tener que recordar las operaciones de CLI. Se ejecuta desde la raíz del repositorio, con credenciales del Lab y Terraform conectado al state del despliegue. Para preparar otra copia local, ver [el README](../README.md#probar-la-aplicación). No se ejecuta desde el navegador:
 
 ```bash
 make grupo EMAIL=portero@example.com GRUPO=porteros SEDE=1
@@ -61,7 +61,7 @@ make grupo EMAIL=transportista@example.com GRUPO=transportistas
 También admite un pool explícito:
 
 ```bash
-python3 scripts/asignar-rol.py --pool us-east-1_ID_REAL --usuario persona@example.com --grupo porteros --sede 1
+python3 scripts/asignar-rol.py --pool us-east-1_ID_REAL --notificaciones-lambda accesoseguro-dev-gestionar-usuarios --usuario persona@example.com --grupo porteros --sede 1
 ```
 
 El ID de sede debe existir en RDS. En la base inicial: 1 Planta Central, 2 Depósito Norte, 3 Depósito Sur. El script comprueba usuario y grupo, retira las membresías anteriores, actualiza la sede y agrega el nuevo grupo. Si falla a mitad del proceso, revisar el error y repetir; puede quedar sin rol, sin recibir permisos adicionales.

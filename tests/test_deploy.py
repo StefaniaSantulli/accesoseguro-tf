@@ -57,6 +57,31 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'iniciar'):
                 deploy.migrate(out)
 
+    def test_partial_deployment_pauses_ecs_without_creating_missing_scaling_or_rule(self):
+        out = {'ecs_cluster_name': 'cluster', 'ecs_service_name': 'api'}
+        with patch.object(deploy, 'aws_json', side_effect=[{'ScalableTargets': []}, {}, {}, {'Rules': []}]) as aws:
+            deploy.pause_existing(out)
+        commands = [call.args[1] for call in aws.call_args_list]
+        self.assertIn('update-service', commands)
+        self.assertNotIn('register-scalable-target', commands)
+        self.assertNotIn('disable-rule', commands)
+
+    def test_update_waits_for_already_disabling_worker_and_keeps_audit_active(self):
+        out = {'ecs_cluster_name': 'cluster', 'ecs_service_name': 'api',
+               'lambda_functions': {'notificar-mail': 'mail', 'archivar-auditoria': 'audit'}}
+        with patch.object(deploy, 'aws_json', side_effect=[
+            {'ScalableTargets': [{'MinCapacity': 2}]}, {}, {}, {},
+            {'EventSourceMappings': [{'UUID': 'mapping', 'State': 'Disabling'}]},
+            {'Rules': [{'Name': 'accesoseguro-dev-vencer-permisos'}]}, {},
+        ]) as aws, patch.object(deploy, 'wait_mapping_disabled') as wait:
+            deploy.pause_existing(out)
+        wait.assert_called_once_with('mapping')
+        commands = [call.args[1] for call in aws.call_args_list]
+        self.assertIn('register-scalable-target', commands)
+        self.assertIn('disable-rule', commands)
+        self.assertNotIn('update-event-source-mapping', commands)
+        self.assertFalse(any('audit' in call.args for call in aws.call_args_list))
+
     def test_existing_immutable_image_is_reused_but_access_errors_fail(self):
         with patch.object(deploy, 'run', return_value=Mock(stdout='password')) as run:
             with patch.object(deploy, 'aws', return_value=Mock(returncode=0)):
