@@ -39,6 +39,7 @@ espera. La tabla DynamoDB del método clásico queda como opción (`create_dynam
 .
 ├── .github/workflows/terraform.yml   # fmt, init, validate y plan en cada PR
 ├── .github/workflows/deploy.yml      # despliegue completo manual, incluidas imagen y RDS
+├── .github/workflows/destroy.yml     # destroy manual de toda la infraestructura (con confirmación)
 ├── terraform/
 │   ├── bootstrap/                    # 1er Terraform: bucket del state (+ genera infra/backend.hcl)
 │   ├── infra/                        # 2do Terraform: la arquitectura, un archivo por capa
@@ -258,11 +259,23 @@ make outputs    # sitio_url, api_url, login_url...
    registra ingreso/egreso, y todo queda en auditoría y en el reporte CSV.
 
 ### Destruir al terminar
-```bash
-cd terraform/infra && terraform destroy
-```
-El bucket del state **no** se destruye (tiene `prevent_destroy`). Si de verdad hay que borrarlo,
-sacar el bloque `lifecycle` de `bootstrap/main.tf`, vaciar el bucket y hacer `terraform destroy`.
+Conviene bajar la infraestructura cuando no se usa (después de la corrección o entre sesiones),
+porque RDS Multi-AZ, el ALB, los VPC Endpoints y las tasks de Fargate consumen crédito del Lab.
+
+1. **Actions → destruir-infraestructura → Run workflow**.
+2. En el campo de confirmación escribir `destruir` (cualquier otro texto cancela sin borrar nada).
+
+El workflow usa el mismo state remoto que el despliegue, empaqueta la Layer (la exige una
+precondición de `lambdas.tf`) y ejecuta `terraform destroy`. Si no encuentra state, termina sin
+cambios. Borra todo, incluidos los datos de RDS, los buckets y los usuarios de Cognito.
+Si falla por una dependencia que AWS tarda en liberar (por ejemplo, interfaces de red de
+las Lambdas en la VPC), volver a ejecutarlo.
+
+Equivalente local, con las credenciales del Lab: `make destroy` (empaqueta la Layer antes).
+
+El bucket del state **no** se destruye (tiene `prevent_destroy`): un nuevo despliegue lo
+reutiliza. Si de verdad hay que borrarlo, sacar el bloque `lifecycle` de `bootstrap/main.tf`,
+vaciar el bucket y hacer `terraform destroy` en `bootstrap/`.
 
 ---
 
@@ -273,6 +286,7 @@ sacar el bloque `lifecycle` de `bootstrap/main.tf`, vaciar el bucket y hacer `te
 | `terraform.yml` | PR a `main` o manual | `fmt`, `init`, `validate`; `plan` con credenciales y backend existente |
 | `tests.yml` | PR, manual y antes de desplegar | Python, PostgreSQL 16, frontend y Layer Linux |
 | `deploy.yml` | Manual: **desplegar-aplicacion** | Pruebas y despliegue completo: `init`, `validate`, `plan`, `apply`, imagen, esquema y comprobaciones |
+| `destroy.yml` | Manual: **destruir-infraestructura**, con confirmación `destruir` | `init` y `destroy` de toda la infraestructura; conserva el bucket del state |
 
 Secrets en **Settings → Secrets and variables → Actions** del repositorio que ejecuta:
 
@@ -287,7 +301,7 @@ Para un primer despliegue, ejecutar **desplegar-aplicacion**; el bucket se crea 
 El `plan` del PR necesita ese backend. En un PR de fork no se reciben los secrets:
 se ejecutan pruebas y validación, y se informa que el plan no se ejecutó. El repositorio
 receptor debe configurar sus credenciales para que la cátedra pueda desplegar.
-Los workflows de Terraform y despliegue comparten un grupo de concurrencia.
+Los workflows de Terraform, despliegue y destroy comparten un grupo de concurrencia: nunca corren a la vez sobre el mismo state.
 
 Antes de subir cambios ejecutar `make fmt` y `make test`. No subir credenciales,
 state ni planes binarios al repositorio.

@@ -56,6 +56,7 @@ Si falla un despliegue, revisar el paso que falló y, para una tarea ECS, su log
 - `pruebas`: pruebas de Python, PostgreSQL 16, frontend y dependencias Linux de la Layer.
 - `terraform`: `fmt`, `init`, `validate` y `plan` si el repositorio receptor tiene credenciales y el backend ya fue preparado.
 - `desplegar-aplicacion`: ejecución manual de `init`, `validate`, `plan`, `apply` y puesta en marcha completa, después de las pruebas.
+- `destruir-infraestructura`: ejecución manual de `init` y `destroy`, con confirmación escrita (`destruir`). Conserva el bucket del state para volver a desplegar.
 
 Los secrets no se transfieren a los PR de forks. En ese caso se informa explícitamente que no se ejecutó el plan; formato, validación y pruebas siguen ejecutándose. Para la evaluación completa, el repositorio receptor debe tener sus propios secrets y ejecutar primero **desplegar-aplicacion** para preparar el backend. Un PR no despliega automáticamente recursos en la cuenta.
 
