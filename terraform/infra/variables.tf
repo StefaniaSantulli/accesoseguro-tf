@@ -292,3 +292,9 @@ variable "cognito_callback_path" {
   type        = string
   default     = "/callback"
 }
+
+variable "deployment_ready" {
+  description = "El pipeline usa false hasta publicar la imagen e inicializar RDS; luego habilita API y workers con true."
+  type        = bool
+  default     = true
+}

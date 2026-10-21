@@ -10,6 +10,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: accesoseguro-terraform
+  cancel-in-progress: false
+
 permissions:
   contents: read
   pull-requests: write
@@ -72,10 +76,14 @@ jobs:
       - name: Revisar credenciales
         id: creds
         run: |
-          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$TF_STATE_BUCKET" ]; then
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$AWS_SESSION_TOKEN" ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Faltan los secrets AWS_* o TF_STATE_BUCKET: se saltea el plan."
+            echo "::warning::Faltan credenciales AWS del repositorio receptor (no se comparten con forks): plan no ejecutado."
           else
+            if [ -z "$TF_STATE_BUCKET" ]; then
+              account=$(aws sts get-caller-identity --query Account --output text)
+              echo "TF_STATE_BUCKET=accesoseguro-tfstate-${account}" >> "$GITHUB_ENV"
+            fi
             echo "available=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -106,7 +114,8 @@ jobs:
         if: steps.creds.outputs.available == 'true'
         id: plan
         run: |
-          terraform plan -input=false -no-color -lock-timeout=120s -out=tfplan | tee plan.txt
+          set -euo pipefail
+          terraform plan -input=false -no-color -lock-timeout=120s -var="api_image_tag=${GITHUB_SHA}" -out=tfplan | tee plan.txt
           terraform show -no-color tfplan > /dev/null
 
       - name: Publicar el plan en el resumen

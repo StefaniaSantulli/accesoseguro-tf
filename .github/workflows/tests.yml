@@ -2,6 +2,7 @@ name: pruebas
 on:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -37,4 +38,4 @@ jobs:
         run: |
           mkdir -p /tmp/accesoseguro-layer
           unzip -q terraform/infra/.build/notificaciones-layer.zip -d /tmp/accesoseguro-layer
-          PYTHONPATH=/tmp/accesoseguro-layer/python python -c "import psycopg, sqlalchemy, notifications, notification_jobs; print('Layer OK')"
+          PYTHONPATH=/tmp/accesoseguro-layer/python python -c "import psycopg, sqlalchemy, notifications, notification_jobs, application_jobs; print('Layer OK')"

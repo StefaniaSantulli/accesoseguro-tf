@@ -6,15 +6,18 @@
 # como argumento: scripts/push-image.sh v1.2). Los tags son inmutables, así
 # que cada cambio de la API necesita un tag nuevo.
 #
-# Después de subirla: "make plan" y "make apply". Terraform crea una revisión
-# nueva de la task definition y ECS hace el rolling update.
+# Herramienta individual: solo publica una imagen. Para desplegar también
+# infraestructura y esquema de RDS usar "make deploy" o el workflow completo.
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFRA="$ROOT/terraform/infra"
 
-TAG="${1:-$(sed -nE 's/^[[:space:]]*api_image_tag[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$INFRA/terraform.tfvars" 2>/dev/null | head -1)}"
+TAG="${1:-}"
+if [ -z "$TAG" ] && [ -f "$INFRA/terraform.tfvars" ]; then
+  TAG="$(sed -nE 's/^[[:space:]]*api_image_tag[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$INFRA/terraform.tfvars" | head -1)"
+fi
 TAG="${TAG:-v1.1}"
 
 REPO_URL="$(cd "$INFRA" && terraform output -raw ecr_repository_url)"
@@ -33,4 +36,4 @@ docker build --platform linux/amd64 -t "$REPO_URL:$TAG" "$ROOT/backend"
 docker push "$REPO_URL:$TAG"
 
 echo
-echo "==> Listo. Ahora: make plan  y  make apply  (despliega $TAG en ECS)."
+echo "==> Imagen publicada. Esto no inicializa RDS ni actualiza ECS; para el despliegue completo usar make deploy."

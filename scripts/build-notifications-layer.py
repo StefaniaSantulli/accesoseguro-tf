@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "terraform/infra/.build"
 REQUIREMENTS = ROOT / "lambdas/layers/notificaciones/requirements.txt"
-SOURCES = [ROOT / "backend/notifications.py", ROOT / "backend/notification_jobs.py", REQUIREMENTS]
+SOURCES = [ROOT / "backend/notifications.py", ROOT / "backend/notification_jobs.py", ROOT / "backend/application_jobs.py", REQUIREMENTS]
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
             "--implementation", "cp", "--python-version", "3.12",
             "--abi", "cp312", "--only-binary=:all:", "--target", str(target), "-r", str(REQUIREMENTS),
         ], check=True)
-        for source in SOURCES[:2]:
+        for source in SOURCES[:-1]:
             shutil.copyfile(source, target / source.name)
         # curl usa el almacén de confianza del sistema también en macOS.
         # Nunca se deshabilita la validación TLS para obtener certificados.

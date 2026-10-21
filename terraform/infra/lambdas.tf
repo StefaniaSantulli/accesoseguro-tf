@@ -15,7 +15,7 @@ module "lambdas" {
   memory_size   = each.value.memory_size
   role_arn      = data.aws_iam_role.lab_role.arn
   environment   = each.value.environment
-  layers        = contains(["vencer-permisos", "notificar-mail"], each.key) ? [aws_lambda_layer_version.notificaciones.arn] : []
+  layers        = contains(["vencer-permisos", "notificar-mail", "validar-documento", "generar-reporte"], each.key) ? [aws_lambda_layer_version.notificaciones.arn] : []
 
   # Solo las que necesitan RDS van dentro de la VPC (subredes de app).
   vpc_config = each.value.in_vpc ? {
@@ -36,7 +36,7 @@ resource "aws_lambda_event_source_mapping" "sqs" {
   event_source_arn = module.sqs[each.key].queue_arn
   function_name    = module.lambdas[each.value.consumer].arn
   batch_size       = each.value.batch_size
-  enabled          = true
+  enabled          = each.key == "auditoria" ? true : var.deployment_ready
 
   # Si falla un mensaje del lote, solo ese vuelve a la cola.
   function_response_types = ["ReportBatchItemFailures"]
@@ -55,6 +55,7 @@ resource "aws_cloudwatch_event_rule" "vencer_permisos" {
   name                = "${local.name_prefix}-vencer-permisos"
   description         = "Dispara vencer-permisos y republica eventos pendientes"
   schedule_expression = var.vencer_permisos_schedule
+  state               = var.deployment_ready ? "ENABLED" : "DISABLED"
 }
 
 resource "aws_lambda_layer_version" "notificaciones" {
@@ -69,6 +70,7 @@ resource "aws_lambda_layer_version" "notificaciones" {
       condition = try(trimspace(file("${path.module}/.build/notificaciones-layer.sha256")) == sha256(join("", [
         filesha256("${path.module}/../../backend/notifications.py"),
         filesha256("${path.module}/../../backend/notification_jobs.py"),
+        filesha256("${path.module}/../../backend/application_jobs.py"),
         filesha256("${path.module}/../../lambdas/layers/notificaciones/requirements.txt"),
       ])), false) && var.lambda_runtime == "python3.12"
       error_message = "Ejecutar make layer antes de planificar; la Layer requiere Python 3.12/x86_64 y fuentes actualizadas."

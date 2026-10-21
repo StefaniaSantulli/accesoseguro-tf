@@ -22,7 +22,7 @@ usarlo. Como vimos en clase, se resuelve con **dos Terraform**:
 
 | Proyecto | Qué crea | Dónde guarda su propio state |
 |---|---|---|
-| `bootstrap/` | El bucket S3 del state (versionado, cifrado, privado, solo HTTPS, `prevent_destroy`) y genera `infra/backend.hcl` | Local (`bootstrap/terraform.tfstate`) |
+| `bootstrap/` | El bucket S3 del state (versionado, cifrado, privado, solo HTTPS, `prevent_destroy`) y genera `infra/backend.hcl` | Temporal local; el despliegue lo migra al mismo S3, con lock |
 | `infra/` | Toda la arquitectura de AccesoSeguro | En el bucket creado por `bootstrap/` |
 
 El nombre del bucket es una variable (no está hardcodeado) y por defecto se arma como
@@ -38,7 +38,8 @@ espera. La tabla DynamoDB del método clásico queda como opción (`create_dynam
 
 ```
 .
-├── .github/workflows/terraform.yml   # Pipeline: fmt, init, validate y plan en cada PR
+├── .github/workflows/terraform.yml   # fmt, init, validate y plan en cada PR
+├── .github/workflows/deploy.yml      # despliegue completo manual, incluidas imagen y RDS
 ├── terraform/
 │   ├── bootstrap/                    # 1er Terraform: bucket del state (+ genera infra/backend.hcl)
 │   ├── infra/                        # 2do Terraform: la arquitectura, un archivo por capa
@@ -54,9 +55,10 @@ espera. La tabla DynamoDB del método clásico queda como opción (`create_dynam
 ├── lambdas/<nombre>/handler.py       # código de las 7 Lambdas
 ├── backend/                          # API Flask + Dockerfile (imagen de ECS)
 ├── frontend/                         # sitio estático (HTML/CSS/JS) + config.js.tftpl
-├── scripts/push-image.sh             # build + push a ECR + redeploy de ECS
+├── scripts/deploy.py                 # ordena infraestructura, imagen, base y verificaciones
+├── scripts/push-image.sh             # herramienta individual de build + push
 ├── Makefile                          # atajos: make bootstrap / init / plan / apply / image
-├── architecture.png                  # diagrama actualizado
+├── docs/arquitectura.mmd             # fuente del diagrama actualizado
 └── README.md
 ```
 
@@ -70,25 +72,53 @@ Convenciones: todos los recursos se llaman `<proyecto>-<ambiente>-<componente>`
 
 ```mermaid
 flowchart LR
-  U[Usuario] -->|HTML/JS| S3S[S3 sitio]
-  U -->|login| COG[Cognito Hosted UI]
-  COG -->|code| APIGW[API Gateway /callback]
-  APIGW --> LCB[Lambda auth-callback]
-  U -->|Bearer token| IGW[Internet Gateway] --> ALB
-  subgraph VPC 10.0.0.0/16
-    ALB[ALB - subredes públicas] --> ECS[ECS Fargate Flask - subredes app]
-    ECS --> RDS[(RDS PostgreSQL Multi-AZ - subredes datos)]
-    ECS -->|invoke| LREP[Lambda generar-reporte]
-    LVAL[Lambda validar-documento] --> RDS
-    LVEN[Lambda vencer-permisos] --> RDS
-    LREP --> RDS
-    VPCE[VPC Endpoints: S3, ECR, logs, secrets, SNS, Lambda]
+  U[Usuario] -->|HTTP| WEB[S3 sitio]
+  U -->|HTTPS login| COG[Cognito Hosted UI]
+  COG -->|code HTTPS| GW[API Gateway callback]
+  GW --> CB[Lambda auth-callback]
+  CB -->|Canje de code| COG
+  CB -->|Redirección HTTP con tokens en fragmento| U
+  U -->|HTTP con access token| IGW[Internet Gateway] --> ALB
+  subgraph VPC["VPC: us-east-1a y us-east-1b"]
+    subgraph PUBLICA["Subredes públicas: una por AZ"]
+      ALB[ALB]
+    end
+    subgraph APP["Subredes de aplicación: una por AZ"]
+      ECS[ECS Fargate API]
+      REP[Lambda generar-reporte]
+      VAL[Lambda validar-documento]
+      VEN[Lambda vencer-permisos]
+      MAIL[Lambda notificar-mail]
+      VPCE[Endpoints: S3, ECR, Logs, Secrets Manager, SNS y Lambda]
+    end
+    subgraph DATOS["Subredes de datos: una por AZ"]
+      RDS[(RDS PostgreSQL Multi-AZ)]
+    end
+    ALB --> ECS
+    ECS --> RDS
+    ECS -->|Invocación autorizada| REP
+    REP --> RDS
+    VAL --> RDS
+    VEN --> RDS
+    MAIL --> RDS
   end
-  ECS -->|publica| SNS[SNS eventos-solicitud]
-  SNS --> QA[SQS auditoría] --> LAUD[Lambda archivar-auditoria] --> S3A[S3 auditoría]
-  SNS --> QN[SQS notificaciones] --> LMAIL[Lambda notificar-mail] --> SNSMAIL[SNS notificaciones-mail: mail]
-  S3D[S3 documentos] -->|PDF nuevo| QD[SQS documentos] --> LVAL
-  EB[EventBridge 15 min] --> LVEN --> SNS
+  ECR[ECR imagen] --> ECS
+  SM[Secrets Manager] --> ECS
+  SM --> REP & VAL & VEN & MAIL
+  ECS -->|Perfil y alta| USERS[Lambda gestionar-usuarios]
+  USERS --> COG
+  USERS -->|Suscripciones y filtros| SNSMAIL[SNS notificaciones por email]
+  U -->|PUT firmado HTTPS| DOCS[S3 documentos]
+  DOCS --> QD[SQS documentos y DLQ] --> VAL
+  ECS -->|Eventos guardados en outbox| SNS[SNS eventos-solicitud]
+  EB[EventBridge cada minuto configurable] --> VEN --> SNS
+  SNS --> QA[SQS auditoría y DLQ] --> AUD[Lambda archivar-auditoria]
+  AUD --> ARCH[S3 auditoría]
+  REP -->|CSV en reportes/| ARCH
+  ARCH -->|Descarga firmada HTTPS| U
+  SNS --> QN[SQS notificaciones y DLQ] --> MAIL --> SNSMAIL
+  SNSMAIL -->|Filtro por destinatario| EMAIL[Correo confirmado]
+  CW[CloudWatch logs y alarmas]
 ```
 
 | Capa (PDF) | Servicio | Archivo | Recursos principales |
@@ -180,51 +210,36 @@ Atajo: todos los pasos están en el `Makefile` (`make help`).
 - Terraform ≥ 1.10 (`terraform -version`)
 - AWS CLI v2 (Terraform la usa para crear los buckets) y Docker
 - Credenciales del Learner Lab: **AWS Details → AWS CLI** y pegarlas en `~/.aws/credentials`
-  (vencen cada sesión de 4 horas)
+  (son temporales; renovar cuando venzan)
 
 ```bash
 aws sts get-caller-identity   # tiene que mostrar el account id del lab
 ```
 
-### Paso 1 — State remoto (bootstrap)
-```bash
-cd terraform/bootstrap
-cp terraform.tfvars.example terraform.tfvars   # opcional
-terraform init
-terraform plan
-terraform apply
-terraform output
-```
-Esto crea el bucket `accesoseguro-tfstate-<account_id>` y escribe `infra/backend.hcl`.
-**Guardar `bootstrap/terraform.tfstate`** (no se sube al repo). Si se pierde, el bucket se
-puede importar con `terraform import aws_s3_bucket.tfstate <nombre>`.
+### Desplegar desde cero o actualizar
 
-### Paso 2 — Infraestructura
+1. Guardar los cambios en un commit y subirlos. El nuevo workflow manual debe incorporarse primero a `main` para habilitarlo en GitHub; luego permite seleccionar la rama a desplegar.
+2. Configurar los secrets de AWS en GitHub (ver sección 8).
+3. Ejecutar **Actions → desplegar-aplicacion → Run workflow**, seleccionando esa rama.
+4. Esperar el resultado y abrir la URL publicada en el resumen.
+
+El workflow construye la Layer y la imagen, crea o recupera el backend de Terraform,
+prepara la infraestructura, sube la imagen a ECR, ejecuta una tarea puntual de ECS para
+crear las tablas y sedes, habilita la aplicación y verifica salud, sitio y reporte real.
+No requiere crear tablas ni subir la imagen manualmente. Si ya hay una instalación,
+usa el mismo state y realiza una actualización con una ventana de mantenimiento.
+
+Equivalente desde un checkout limpio, con Python 3.12, Terraform, AWS CLI y Docker:
+
 ```bash
-cd ../infra
-cp terraform.tfvars.example terraform.tfvars   # configurar vigencia y alarm_email
-terraform init -backend-config=backend.hcl
-terraform validate
-terraform plan -out=tfplan
-terraform apply tfplan                          # ~15-20 min (RDS Multi-AZ es lo más lento)
-```
-Para verificar que el state quedó en S3:
-```bash
-aws s3 ls s3://$(cd ../bootstrap && terraform output -raw state_bucket_name)/accesoseguro/dev/
+make deploy
 ```
 
-### Paso 3 — Imagen de la API
-El servicio de ECS queda creado, pero las tasks no arrancan hasta que exista en ECR la
-imagen con el tag de `api_image_tag`:
-```bash
-make image      # construye backend/ y la sube con el tag de terraform.tfvars
-make plan
-make apply      # nueva revisión de la task definition + rolling update
-```
-Los tags son **inmutables**: para desplegar un cambio de la API, subí `api_image_tag`
-(v1.1 → v1.2), `make image`, `make plan`, `make apply`.
+Ver [guía de despliegue TP3](docs/despliegue-tp3.md) para las etapas, estados,
+recuperación de fallos y funcionamiento real de documentos/reportes. Los comandos
+individuales `make plan`, `make apply` y `make image` no sustituyen el proceso completo.
 
-### Paso 4 — Probar la aplicación
+### Probar la aplicación
 ```bash
 make outputs    # sitio_url, api_url, login_url...
 ```
@@ -245,7 +260,7 @@ make outputs    # sitio_url, api_url, login_url...
    (Lambda `notificar-mail`). El responsable aprueba, portería verifica por DNI o patente y
    registra ingreso/egreso, y todo queda en auditoría y en el reporte CSV.
 
-### Paso 5 — Destruir (al terminar la sesión del lab)
+### Destruir al terminar
 ```bash
 cd terraform/infra && terraform destroy
 ```
@@ -256,26 +271,29 @@ sacar el bloque `lifecycle` de `bootstrap/main.tf`, vaciar el bucket y hacer `te
 
 ## 8. Pipeline de GitHub Actions
 
-`.github/workflows/terraform.yml` corre en cada **pull request** a `main`:
-
-| Job | Pasos | Necesita credenciales |
+| Workflow | Cuándo | Qué ejecuta |
 |---|---|---|
-| `validate` (matriz `bootstrap` / `infra`) | `terraform fmt -check` → `terraform init -backend=false` → `terraform validate` | No |
-| `plan` (`infra`) | arma `backend.hcl` → `terraform init` → `terraform plan` → publica el plan en el resumen y comenta en el PR | Sí |
+| `terraform.yml` | PR a `main` o manual | `fmt`, `init`, `validate`; `plan` con credenciales y backend existente |
+| `tests.yml` | PR, manual y antes de desplegar | Python, PostgreSQL 16, frontend y Layer Linux |
+| `deploy.yml` | Manual: **desplegar-aplicacion** | Pruebas y despliegue completo: `init`, `validate`, `plan`, `apply`, imagen, esquema y comprobaciones |
 
-Secrets a cargar en **Settings → Secrets and variables → Actions** del repositorio donde
-corre el PR:
+Secrets en **Settings → Secrets and variables → Actions** del repositorio que ejecuta:
 
 | Secret | Valor |
 |---|---|
-| `AWS_ACCESS_KEY_ID` | del Learner Lab |
-| `AWS_SECRET_ACCESS_KEY` | del Learner Lab |
-| `AWS_SESSION_TOKEN` | del Learner Lab (vence: actualizarlo antes de abrir el PR) |
-| `TF_STATE_BUCKET` | salida `state_bucket_name` de `bootstrap/` |
+| `AWS_ACCESS_KEY_ID` | Del Learner Lab |
+| `AWS_SECRET_ACCESS_KEY` | Del Learner Lab |
+| `AWS_SESSION_TOKEN` | Del Learner Lab; renovar cuando venza |
+| `TF_STATE_BUCKET` | Bucket del despliegue existente; opcional si se usa `accesoseguro-tfstate-<account_id>` |
 
-Si faltan los secrets, el job `plan` muestra un aviso y termina sin error; `validate` corre
-igual. **Antes de cada push** correr `make fmt` para que no falle
-el `fmt -check`.
+Para un primer despliegue, ejecutar **desplegar-aplicacion**; el bucket se crea automáticamente.
+El `plan` del PR necesita ese backend. En un PR de fork no se reciben los secrets:
+se ejecutan pruebas y validación, y se informa que el plan no se ejecutó. El repositorio
+receptor debe configurar sus credenciales para que la cátedra pueda desplegar.
+Los workflows de Terraform y despliegue comparten un grupo de concurrencia.
+
+Antes de subir cambios ejecutar `make fmt` y `make test`. No subir credenciales,
+state ni planes binarios al repositorio.
 
 ---
 
@@ -301,8 +319,9 @@ el `fmt -check`.
 - **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase,
   guarda Access Token e ID Token en sessionStorage y usa solo el primero para la API.
   Ver [guía de Cognito y roles](docs/cognito-y-roles.md).
-- **Lambdas** — `validar-documento` y `generar-reporte` tienen la parte de RDS
-  simulada (mock data, permitido por la consigna); el reporte CSV hoy lo genera la API.
+- **Lambdas** — `validar-documento` persiste la validación de cada PDF en RDS;
+  `generar-reporte` consulta datos reales por sede y publica el CSV privado en S3.
+  La API autoriza e invoca el reporte. Ver [documentos y reportes](docs/despliegue-tp3.md).
 
 ### Probar en local (sin AWS)
 ```bash
@@ -315,4 +334,4 @@ cd frontend && python3 -m http.server 8000                           # terminal 
 
 Ver [notificaciones.md](docs/notificaciones.md) para el circuito real, la confirmación SNS, el outbox, reintentos y recuperación de fallos. Ejecutar `make layer` antes de `make plan`. Las suscripciones se activan desde el inicio o `scripts/notificaciones.py`; el script de roles actualiza los filtros automáticamente.
 
-`vencer-permisos` ahora consulta PostgreSQL y recupera eventos reales. `notificar-mail` también usa RDS para registrar publicaciones y omitir duplicados ya procesados. La Layer incluye las dependencias Linux. El procesamiento de documentos y la Lambda de reportes conservan las limitaciones previas, fuera de este cambio.
+`vencer-permisos` ahora consulta PostgreSQL y recupera eventos reales. `notificar-mail` también usa RDS para registrar publicaciones y omitir duplicados ya procesados. La Layer incluye las dependencias Linux. Documentos y reportes también usan esa Layer y consultan RDS. SNS auditoría conserva su implementación previa.
