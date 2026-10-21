@@ -37,7 +37,6 @@ RDS PostgreSQL Multi-AZ, 7 Lambdas, SNS + SQS con DLQ y EventBridge. Sin EC2 y s
 9. [Decisiones por las restricciones del Learner Lab](#9-decisiones-por-las-restricciones-del-learner-lab)
 10. [La aplicación en detalle](#10-la-aplicación-en-detalle)
 11. [Desarrollo local y pruebas](#11-desarrollo-local-y-pruebas)
-12. [Verificación de la consigna](#12-verificación-de-la-consigna)
 
 ---
 
@@ -345,7 +344,7 @@ Cada módulo propio tiene `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`
 | `cidrhost()` + `can()` | `modules/network/variables.tf` | Validar que `vpc_cidr` sea un CIDR válido |
 | `merge()` | network, `locals.tf` | Unir los mapas de subredes por capa; unir nombres de buckets |
 | `substr()` | network, `alb.tf` | Letra de la AZ (`us-east-1a` → `a`); recortar nombres a 32 caracteres |
-| `format()` | `locals.tf`, `security.tf`, `bootstrap/main.tf` | Armar nombres de bucket, dominio de Cognito y URLs |
+| `format()` | `locals.tf`, `data.tf`, `bootstrap/main.tf` | Armar nombres de bucket, key del state, dominio de Cognito y URLs (login y JWKS) |
 | `coalesce()` | `bootstrap/main.tf` | Usar el nombre de bucket pasado o, si está vacío, uno generado |
 | `templatefile()` | `bootstrap/main.tf`, `frontend.tf` | Generar `backend.hcl` y el `config.js` del sitio con valores reales |
 | `jsonencode()` | KMS, bucket policies, SQS, ECS, ECR | Escribir políticas y definiciones JSON en HCL |
@@ -373,7 +372,8 @@ Cada módulo propio tiene `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`
 | `lifecycle { create_before_destroy }` | Security Groups, parameter group de RDS | Reemplazar sin cortar: AWS no deja borrar un SG en uso |
 | `lifecycle { ignore_changes }` | `desired_count` del servicio ECS; `schema` del User Pool; snapshot final de RDS | No pelear con el Auto Scaling; Cognito no permite modificar el schema (recrearía el pool y se perderían los usuarios) |
 
-También se usan **bloques `dynamic`** (`vpc_config` de las Lambdas, reglas de la NACL),
+También se usan **bloques `dynamic`** (`vpc_config` de las Lambdas, reglas de la NACL,
+reglas de lifecycle y CORS de los buckets),
 **validaciones** en las variables y bloques **`moved`** que conservan las colas, políticas y
 alarmas renombradas en la versión 4 sin recrearlas
 ([refactorización en Terraform](https://developer.hashicorp.com/terraform/language/modules/develop/refactoring));
@@ -531,18 +531,3 @@ make test       # pruebas de Python y frontend
 Las pruebas de PostgreSQL necesitan `TEST_POSTGRES_URL` apuntando a una base de pruebas;
 Actions la provee y, sin ella, esas pruebas se omiten. No subir credenciales, state ni planes al
 repositorio.
-
----
-
-## 12. Verificación de la consigna
-
-| Requisito | Dónde se cumple |
-|---|---|
-| Al menos un módulo propio y uno externo | Cuatro propios en `terraform/modules` y ECR del Terraform Registry (sección 7.2) |
-| Variables y outputs | `variables.tf` y `outputs.tf` en ambos proyectos; el despliegue consume las salidas (sección 7.5) |
-| Al menos cuatro funciones | `cidrsubnet`, `merge`, `templatefile`, `jsonencode`, entre otras (sección 7.3) |
-| Al menos tres meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (sección 7.4) |
-| Organización, nomenclatura y DRY | Un archivo por capa, módulos con `for_each`, mapas en `locals.tf` y código Python compartido (secciones 7 y 8) |
-| Diagrama de arquitectura actualizado | Sección 1 |
-| README: módulos, funciones, meta-argumentos y guía paso a paso | Secciones 3 a 7 |
-| GitHub Actions: init, validate, plan, apply | Validación y plan en cada PR; despliegue manual completo (sección 6) |
