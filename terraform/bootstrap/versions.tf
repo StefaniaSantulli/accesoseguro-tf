@@ -2,8 +2,8 @@
 # BOOTSTRAP: el "primer Terraform".
 # Crea SOLO el bucket donde va a vivir el state file del Terraform principal
 # (infra/). Como el bucket todavía no existe, este proyecto guarda su propio
-# state en local (bootstrap/terraform.tfstate). Es el problema del huevo y la
-# gallina: alguien tiene que crear el bucket antes de poder usarlo de backend.
+# state inicialmente en local (bootstrap/terraform.tfstate). scripts/deploy.py
+# lo migra al mismo S3 con lock mediante un backend_override.tf generado.
 # -----------------------------------------------------------------------------
 terraform {
   # 1.10+ trae el lock nativo de S3 (use_lockfile), sin necesidad de DynamoDB.

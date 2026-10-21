@@ -60,20 +60,20 @@ async function cargarPendientes() {
         <tbody>
           ${pendientes.map((s) => `
             <tr>
-              <td>${s.nombre_solicitante}</td>
-              <td>${s.dni}</td>
-              <td>${s.patente || "-"}</td>
-              <td>${s.empresa || "-"}</td>
-              <td>${s.motivo || "-"}</td>
-              <td>${s.sede ? s.sede.nombre : "-"}</td>
+              <td>${escapeHtml(s.nombre_solicitante)}</td>
+              <td>${escapeHtml(s.dni)}</td>
+              <td>${escapeHtml(s.patente || "-")}</td>
+              <td>${escapeHtml(s.empresa || "-")}</td>
+              <td>${escapeHtml(s.motivo || "-")}</td>
+              <td>${escapeHtml(s.sede ? s.sede.nombre : "-")}</td>
               <td>
                 ${s.url_documento
-                  ? `<a class="link-doc" href="${s.url_documento}" target="_blank" rel="noopener">Ver documento</a>`
-                  : '<span style="color:var(--texto-sec);font-size:.85rem">Sin documento</span>'}
+                  ? `<a class="link-doc" href="${escapeHtml(s.url_documento)}" target="_blank" rel="noopener">Ver documento</a>`
+                  : `<span>${escapeHtml(s.documento_motivo || ({pendiente: "Validando documento; actualizá esta página", rechazado: "Documento rechazado", sin_validar: "Debe volver a cargarse"}[s.documento_estado]) || "Sin documento")}</span>`}
               </td>
               <td>
                 <input type="text" placeholder="Motivo (opcional)" class="form-control motivo-input" data-id="${s.id}" style="margin-bottom:.4rem;font-size:.82rem;padding:.4rem .6rem">
-                <button class="btn-approve" onclick="resolver(${s.id}, 'aprobada')">Aprobar</button>
+                <button class="btn-approve" ${s.tiene_documento && s.documento_estado !== "valido" ? "disabled" : ""} onclick="resolver(${s.id}, 'aprobada')">Aprobar</button>
                 <button class="btn-reject" onclick="resolver(${s.id}, 'rechazada')">Rechazar</button>
               </td>
             </tr>
@@ -83,7 +83,7 @@ async function cargarPendientes() {
       </div>
     `;
   } catch (err) {
-    cont.innerHTML = `<div class="empty-state">Error al cargar: ${err.message}</div>`;
+    cont.innerHTML = `<div class="empty-state">Error al cargar: ${escapeHtml(err.message)}</div>`;
   }
 }
 

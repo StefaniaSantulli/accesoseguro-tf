@@ -21,10 +21,10 @@ validate: fmt    ## fmt + validate de los dos proyectos
 	cd $(BOOTSTRAP) && terraform init -backend=false -input=false && terraform validate
 	cd $(INFRA) && terraform validate
 
-plan:            ## Muestra qué va a cambiar
+plan: layer      ## Muestra qué va a cambiar
 	cd $(INFRA) && terraform plan -out=tfplan
 
-apply:           ## Aplica el último plan
+apply:           ## Aplica solo infraestructura; para la aplicación completa usar deploy
 	cd $(INFRA) && terraform apply tfplan
 
 image:           ## Construye y sube la imagen de backend/ a ECR (tag de terraform.tfvars)
@@ -46,3 +46,7 @@ layer:           ## Empaqueta dependencias Linux y código de notificaciones par
 test:            ## Pruebas de Python y frontend (sin AWS)
 	python3 -m unittest discover -s tests -v
 	node tests/test_frontend_auth.cjs
+
+.PHONY: deploy
+deploy:          ## Despliega toda la aplicación desde un commit limpio (requiere AWS y Docker)
+	python3 scripts/deploy.py --apply --image-tag "$$(git rev-parse HEAD)"

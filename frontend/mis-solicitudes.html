@@ -50,8 +50,7 @@
 requireRole([ROLES.TRANSPORTISTA]);
 renderNav();
 
-document.getElementById("form-buscar").addEventListener("submit", async (e) => {
-  e.preventDefault();
+async function buscarSolicitudes() {
   const dni = document.getElementById("input-dni").value.trim();
   const cont = document.getElementById("resultados");
   cont.innerHTML = "<p style='margin-top:1rem;color:var(--texto-sec)'>Buscando...</p>";
@@ -63,18 +62,41 @@ document.getElementById("form-buscar").addEventListener("submit", async (e) => {
     }
     cont.innerHTML = solicitudes.map((s) => `
       <div class="result-box ${s.estado === "aprobada" ? "result-ok" : s.estado === "rechazada" ? "result-fail" : ""}" style="margin-top:1rem">
-        <h3>Solicitud #${s.id} ${s.sede ? "— " + s.sede.nombre : ""}</h3>
-        <p><b>Estado:</b> <span class="badge-estado badge-${s.estado}">${s.estado}</span></p>
-        <p><b>Motivo:</b> ${s.motivo || "-"}</p>
-        ${s.motivo_decision ? `<p><b>Motivo de la decisión:</b> ${s.motivo_decision}</p>` : ""}
-        ${s.hora_ingreso ? `<p><b>Ingreso registrado:</b> ${s.hora_ingreso}</p>` : ""}
-        ${s.hora_egreso ? `<p><b>Egreso registrado:</b> ${s.hora_egreso}</p>` : ""}
+        <h3>Solicitud #${s.id} ${escapeHtml(s.sede ? "— " + s.sede.nombre : "")}</h3>
+        <p><b>Estado:</b> <span class="badge-estado badge-${escapeHtml(s.estado)}">${escapeHtml(s.estado)}</span></p>
+        <p><b>Documento:</b> ${escapeHtml(s.documento_motivo || s.documento_estado || "Sin documento")}</p>
+        ${s.estado === "pendiente" ? `<label>Cargar o reemplazar PDF
+          <input type="file" accept="application/pdf" onchange="recargarDocumento(${s.id}, this)">
+        </label>` : ""}
+        <p><b>Motivo:</b> ${escapeHtml(s.motivo || "-")}</p>
+        ${s.motivo_decision ? `<p><b>Motivo de la decisión:</b> ${escapeHtml(s.motivo_decision)}</p>` : ""}
+        ${s.hora_ingreso ? `<p><b>Ingreso registrado:</b> ${escapeHtml(s.hora_ingreso)}</p>` : ""}
+        ${s.hora_egreso ? `<p><b>Egreso registrado:</b> ${escapeHtml(s.hora_egreso)}</p>` : ""}
       </div>
     `).join("");
   } catch (err) {
-    cont.innerHTML = `<div class="empty-state">Error al buscar: ${err.message}</div>`;
+    cont.innerHTML = `<div class="empty-state">Error al buscar: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+document.getElementById("form-buscar").addEventListener("submit", (e) => {
+  e.preventDefault();
+  buscarSolicitudes();
 });
+
+async function recargarDocumento(id, input) {
+  const archivo = input.files[0];
+  if (!archivo) return;
+  input.disabled = true;
+  try {
+    await subirDocumento(id, archivo);
+    await buscarSolicitudes();
+    alert("PDF subido. Volvé a buscar en unos segundos para ver el resultado de la validación.");
+  } catch (err) {
+    alert("No se pudo subir el PDF: " + err.message);
+    input.disabled = false;
+  }
+}
 </script>
 </body>
 </html>

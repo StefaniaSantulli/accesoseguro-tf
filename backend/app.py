@@ -15,8 +15,6 @@ Cambios respecto a la versión v3 local:
 - Eventos: cada cambio importante se publica en SNS (fan-out a auditoría y
   notificaciones).
 """
-import csv
-import io
 import json
 import os
 import re
@@ -28,6 +26,8 @@ from urllib.parse import quote_plus
 import boto3
 import jwt
 import notifications
+import application_jobs
+from database_schema import check_ready, upgrade
 from botocore.config import Config
 from flask import Flask, Response, abort, g, jsonify, request
 from flask_cors import CORS
@@ -43,6 +43,8 @@ BUCKET_NAME = os.environ.get("DOCS_BUCKET") or os.environ.get("BUCKET_NAME", "ac
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 # Lambda fuera de la VPC: consulta el perfil y habilita el alta de transportistas.
 ROLES_LAMBDA_NAME = os.environ.get("ROLES_LAMBDA_NAME", "")
+REPORT_LAMBDA_NAME = os.environ.get("REPORT_LAMBDA_NAME", "")
+AUTO_INIT_DB = not (os.environ.get("DB_HOST") or os.environ.get("APP_ENV")) and os.environ.get("AUTO_INIT_DB", "true").lower() == "true"
 
 # s3v4 es obligatorio para presigned URLs de objetos cifrados con KMS.
 s3 = boto3.client("s3", region_name=REGION, config=Config(signature_version="s3v4"))
@@ -79,11 +81,15 @@ def _database_url():
 
 
 app.config["SQLALCHEMY_DATABASE_URI"] = _database_url()
-app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 5} \
-    if app.config["SQLALCHEMY_DATABASE_URI"].startswith("postgresql") else {}
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {}
+if app.config["SQLALCHEMY_DATABASE_URI"].startswith("postgresql"):
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True, "pool_size": 5, "max_overflow": 5, "pool_timeout": 5,
+        "connect_args": {"connect_timeout": 5},
+    }
 db = SQLAlchemy(app)
 # Tablas aditivas: no se borran ni reinterpretan solicitudes históricas.
-for table in notifications.metadata.tables.values():
+for table in [*notifications.metadata.tables.values(), *application_jobs.metadata.tables.values()]:
     table.to_metadata(db.metadata)
 
 
@@ -150,8 +156,11 @@ class Solicitud(db.Model):
             "motivo_decision": self.motivo_decision,
             "tiene_documento": bool(self.documento_s3_key),
         }
+        documento = estado_documento(self)
+        data["documento_estado"] = documento["estado"] if documento else ("sin_validar" if self.documento_s3_key else None)
+        data["documento_motivo"] = documento["motivo"] if documento else None
         if incluir_url_documento:
-            data["url_documento"] = generar_url_documento(self.documento_s3_key)
+            data["url_documento"] = generar_url_documento(self.documento_s3_key, documento)
         return data
 
 
@@ -161,31 +170,10 @@ class AuditoriaSede(db.Model):
     sede_id = db.Column(db.Integer, db.ForeignKey("sede.id"), nullable=False, index=True)
 
 
-_BASE_LISTA = False
-
-
 def inicializar_base():
-    """Crea las tablas y las sedes iniciales (idempotente)."""
-    global _BASE_LISTA
+    """Solo para desarrollo local; en AWS se ejecuta manage_db.py antes del servicio."""
     with app.app_context():
-        try:
-            db.create_all()
-            if not Sede.query.first():
-                for nombre in ("Planta Central", "Deposito Norte", "Deposito Sur"):
-                    db.session.add(Sede(nombre=nombre))
-                db.session.commit()
-            _BASE_LISTA = True
-        except Exception as exc:  # RDS todavía no responde u otra task la creó a la vez
-            db.session.rollback()
-            print(json.dumps({"level": "WARN", "msg": "inicializar_base", "error": str(exc)}))
-
-
-@app.before_request
-def _reintentar_inicializacion():
-    # Si al arrancar la base no estaba lista, se reintenta en el primer pedido
-    # a la API (el health check no la necesita).
-    if not _BASE_LISTA and request.path.startswith("/api/"):
-        inicializar_base()
+        upgrade(db.engine, db.metadata)
 
 
 # -----------------------------------------------------------------------------
@@ -311,11 +299,21 @@ def solicitud_de_sede(id):
 # -----------------------------------------------------------------------------
 # Auxiliares: S3, SNS y auditoría
 # -----------------------------------------------------------------------------
-def generar_url_documento(key, expiracion=PRESIGNED_URL_TTL):
-    if not key:
+def estado_documento(solicitud):
+    if not solicitud.documento_s3_key:
+        return None
+    docs = application_jobs.documents
+    return db.session.execute(db.select(docs).where(
+        docs.c.solicitud_id == solicitud.id, docs.c.s3_key == solicitud.documento_s3_key,
+    )).mappings().one_or_none()
+
+
+def generar_url_documento(key, documento, expiracion=PRESIGNED_URL_TTL):
+    if not documento or documento["estado"] != "valido" or not documento["version_id"]:
         return None
     return s3.generate_presigned_url(
-        "get_object", Params={"Bucket": BUCKET_NAME, "Key": key}, ExpiresIn=expiracion
+        "get_object", Params={"Bucket": BUCKET_NAME, "Key": key, "VersionId": documento["version_id"]},
+        ExpiresIn=expiracion,
     )
 
 
@@ -353,6 +351,11 @@ def _slug(texto):
 @app.route("/")
 @app.route("/health")
 def health():
+    try:
+        with db.engine.connect() as conn:
+            check_ready(conn)
+    except Exception:
+        return jsonify({"status": "unavailable", "service": "accesoseguro-api"}), 503
     return jsonify({"status": "ok", "service": "accesoseguro-api"})
 
 
@@ -449,12 +452,14 @@ def crear_solicitud():
 @requiere_login(GRUPOS_TRANSPORTISTA)
 def url_subida_documento(id):
     """Devuelve una presigned URL para que el navegador suba el PDF directo a S3."""
-    solicitud = db.get_or_404(Solicitud, id)
+    solicitud = Solicitud.query.filter_by(id=id).with_for_update().first_or_404()
     owner = db.session.execute(db.select(notifications.owners.c.usuario_sub).where(
         notifications.owners.c.solicitud_id == id)).scalar_one_or_none()
     if (owner != g.usuario["sub"] if owner else solicitud.email_solicitante != g.usuario.get("email")):
         return jsonify({"error": "La solicitud no es tuya"}), 403
 
+    if solicitud.estado != "pendiente":
+        return jsonify({"error": "Solo se puede cambiar el documento de una solicitud pendiente"}), 409
     empresa = g.usuario.get("empresa_id") or solicitud.empresa
     key = f"empresas/{_slug(empresa)}/solicitudes/{solicitud.id}/documento-{uuid.uuid4().hex[:8]}.pdf"
     url = s3.generate_presigned_url(
@@ -463,6 +468,10 @@ def url_subida_documento(id):
         ExpiresIn=PRESIGNED_URL_TTL,
     )
     solicitud.documento_s3_key = key
+    docs = application_jobs.documents
+    db.session.execute(docs.delete().where(docs.c.solicitud_id == id))
+    db.session.execute(docs.insert().values(solicitud_id=id, s3_key=key, estado="pendiente",
+                                            actualizado=datetime.utcnow()))
     auditar("Carga de documentación", f"Solicitud #{solicitud.id} - {key}", solicitud.sede_id)
     db.session.commit()
     return jsonify({"url": url, "key": key, "max_mb": MAX_PDF_SIZE_MB})
@@ -507,6 +516,10 @@ def resolver_solicitud(id):
     if solicitud.estado != "pendiente":
         return jsonify({"error": "La solicitud ya fue resuelta"}), 409
 
+    if accion == "aprobada" and solicitud.documento_s3_key:
+        documento = estado_documento(solicitud)
+        if not documento or documento["estado"] != "valido" or not documento["version_id"]:
+            return jsonify({"error": "El documento debe estar validado antes de aprobar"}), 409
     solicitud.estado = accion
     solicitud.motivo_decision = motivo
     if accion == "aprobada":
@@ -542,42 +555,39 @@ def ver_auditoria():
 @app.route("/api/reporte/exportar")
 @requiere_login(GRUPOS_RESPONSABLE)
 def exportar_reporte():
-    sede_id = request.args.get("sede_id")
-    desde = request.args.get("desde")
-    hasta = request.args.get("hasta")
-
-    # Las fechas llegan como texto (AAAA-MM-DD). Se convierten a datetime antes
-    # de comparar: PostgreSQL no compara una columna timestamp contra texto.
+    sede_id = g.usuario["sede_id"]
+    if request.args.get("sede_id") and request.args["sede_id"] != str(sede_id):
+        return jsonify({"error": "No tenés permiso para esa sede"}), 403
+    desde, hasta = request.args.get("desde"), request.args.get("hasta")
     try:
-        fecha_desde = datetime.strptime(desde, "%Y-%m-%d") if desde else None
-        fecha_hasta = datetime.strptime(hasta, "%Y-%m-%d") + timedelta(days=1) if hasta else None
-    except ValueError:
-        return jsonify({"error": "Las fechas tienen que tener el formato AAAA-MM-DD"}), 400
-
-    query = solicitudes_de_sede()
-    if sede_id:
-        if sede_id != str(g.usuario["sede_id"]):
-            return jsonify({"error": "No tenés permiso para esa sede"}), 403
-    if fecha_desde:
-        query = query.filter(Solicitud.fecha_creacion >= fecha_desde)
-    if fecha_hasta:
-        query = query.filter(Solicitud.fecha_creacion < fecha_hasta)  # incluye todo el día "hasta"
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["ID", "Nombre", "DNI", "Patente", "Empresa", "Sede", "Estado", "Fecha solicitud", "Hora ingreso", "Hora egreso"])
-    for s in query.order_by(Solicitud.fecha_creacion).all():
-        writer.writerow([
-            s.id, s.nombre_solicitante, s.dni, s.patente, s.empresa,
-            s.sede.nombre, s.estado, s.fecha_creacion,
-            s.hora_ingreso or "", s.hora_egreso or "",
-        ])
-
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=reporte_accesos.csv"},
-    )
+        application_jobs.report_dates(desde, hasta)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if REPORT_LAMBDA_NAME:
+        try:
+            response = lambda_client.invoke(
+                FunctionName=REPORT_LAMBDA_NAME, InvocationType="RequestResponse",
+                Payload=json.dumps({"sede_id": sede_id, "desde": desde, "hasta": hasta}).encode(),
+            )
+            if response.get("FunctionError"):
+                raise RuntimeError("Falló generar-reporte")
+            result = json.loads(response["Payload"].read())
+            if not result.get("ok"):
+                return jsonify({"error": result.get("error", "No se pudo generar el reporte")}), 400
+            if not result.get("url", "").startswith("https://"):
+                raise RuntimeError("Respuesta de reporte inválida")
+            return jsonify(result)
+        except Exception:
+            app.logger.exception("No se pudo generar el reporte")
+            return jsonify({"error": "El reporte no está disponible; reintentá"}), 503
+    if os.environ.get("DB_HOST") or os.environ.get("APP_ENV"):
+        return jsonify({"error": "Falta configurar la Lambda de reportes"}), 503
+    try:
+        content, _ = application_jobs.report_csv(db.session.connection(), sede_id, desde, hasta)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return Response(content, mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=reporte_accesos.csv"})
 
 
 # -----------------------------------------------------------------------------
@@ -651,8 +661,9 @@ def expirar_vencidas():
     return jsonify({"vencidas": len(vencidas), "ids": [s.id for s in vencidas]})
 
 
-# Se ejecuta al importar el módulo (gunicorn) y al correrlo directo.
-inicializar_base()
+# AWS inicia el esquema con una tarea puntual antes de habilitar el servicio.
+if AUTO_INIT_DB:
+    inicializar_base()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", debug=True, port=int(os.environ.get("PORT", "5000")))

@@ -1,0 +1,53 @@
+name: desplegar-aplicacion
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# El mismo grupo que terraform.yml: no planificar sobre un despliegue intermedio.
+concurrency:
+  group: accesoseguro-terraform
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  deploy:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: 'true'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.10.5'
+          terraform_wrapper: false
+      - name: Comprobar credenciales del Lab
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          test -n "$AWS_SESSION_TOKEN"
+          aws sts get-caller-identity
+      - name: Comprobar formato
+        run: terraform fmt -check -recursive terraform
+      - name: Crear infraestructura, publicar imagen, preparar RDS y activar aplicación
+        run: python scripts/deploy.py --apply --image-tag "$GITHUB_SHA"
+      - name: Publicar URL del sitio
+        working-directory: terraform/infra
+        run: |
+          echo "Sitio: $(terraform output -raw sitio_url)" >> "$GITHUB_STEP_SUMMARY"
+          echo "API: $(terraform output -raw api_url)" >> "$GITHUB_STEP_SUMMARY"

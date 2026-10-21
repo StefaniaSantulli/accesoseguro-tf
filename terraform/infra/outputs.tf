@@ -108,3 +108,20 @@ output "notificaciones_dlq" {
     { email = aws_sqs_queue.entrega_mail_dlq.url }
   )
 }
+
+output "deployment" {
+  description = "Datos para ejecutar la inicialización en la misma red y task definition de la API."
+  value = {
+    task_definition = aws_ecs_task_definition.api.arn
+    desired_count   = var.api_min_tasks
+    network_configuration = {
+      awsvpcConfiguration = {
+        subnets        = module.network.subnet_ids_by_tier["app"]
+        securityGroups = [aws_security_group.this["ecs"].id]
+        assignPublicIp = "DISABLED"
+      }
+    }
+    worker_mappings = [for key, mapping in aws_lambda_event_source_mapping.sqs : mapping.uuid if key != "auditoria"]
+    expiration_rule = aws_cloudwatch_event_rule.vencer_permisos.name
+  }
+}

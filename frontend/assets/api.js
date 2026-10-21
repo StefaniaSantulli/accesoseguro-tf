@@ -50,7 +50,16 @@ async function apiPostForm(path, formData) {
 
 // Descarga un archivo (ej. el CSV del reporte) enviando el token.
 async function apiDownload(path, filename) {
-  const res = await apiFetch(path, { headers: authHeaders() });
+  let res = await apiFetch(path, { headers: authHeaders() });
+  if ((res.headers.get("Content-Type") || "").includes("application/json")) {
+    const report = await res.json();
+    if (!report.ok || !report.url || new URL(report.url).protocol !== "https:") {
+      throw new Error("La API no devolvió un reporte válido");
+    }
+    // La URL firmada autoriza la descarga. Nunca enviar el token de Cognito a S3.
+    res = await fetch(report.url, { credentials: "omit" });
+    if (!res.ok) throw new Error("No se pudo descargar el reporte; volvé a generarlo");
+  }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -73,4 +82,9 @@ async function subirDocumento(solicitudId, archivo) {
     body: archivo,
   });
   if (!res.ok) throw new Error(`S3 respondió ${res.status} al subir el documento`);
+}
+
+// Texto ingresado por usuarios: escapar antes de incluirlo en plantillas HTML.
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
 }

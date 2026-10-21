@@ -272,6 +272,7 @@ locals {
   api_environment = {
     AWS_REGION           = var.region
     APP_ENV              = var.environment
+    AUTO_INIT_DB         = "false"
     PORT                 = tostring(var.api_container_port)
     DB_HOST              = aws_db_instance.main.address
     DB_PORT              = tostring(aws_db_instance.main.port)

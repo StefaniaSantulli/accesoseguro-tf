@@ -70,3 +70,31 @@ for (const [page, role] of [['panel-aprobacion', 'RESPONSABLE'], ['reporte', 'RE
 }
 console.log('Frontend OK: access token, state, roles, navegación y modo demo.');
 module.exports = { passed: true, checks: 'tokens, state, roles, navegación y modo demo' };
+
+async function reportDownloadTests() {
+  const ctx = browser(hash);
+  const calls = [];
+  ctx.setTimeout = (callback) => callback();
+  ctx.URL = { createObjectURL: () => 'blob:test', revokeObjectURL() {} };
+  // La API de URL necesita también el constructor para comprobar HTTPS.
+  ctx.URL = class extends URL {
+    static createObjectURL() { return 'blob:test'; }
+    static revokeObjectURL() {}
+  };
+  ctx.document = { body: { appendChild() {} }, createElement: () => ({ click() {}, remove() {} }) };
+  ctx.fetch = async (url, options) => {
+    calls.push({url, options});
+    if (calls.length === 1) return {
+      ok: true, status: 200, headers: { get: () => 'application/json' },
+      json: async () => ({ ok: true, url: 'https://reports.invalid/signed' }),
+    };
+    return { ok: true, blob: async () => new Blob(['ID,Nombre\n']) };
+  };
+  await run(ctx, 'apiDownload("/api/reporte/exportar", "reporte.csv")');
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer ' + access);
+  assert.equal(calls[1].options.headers, undefined);
+  assert.equal(calls[1].options.credentials, 'omit');
+  assert.equal(run(ctx, 'escapeHtml("<script>hola</script>")'), '&lt;script&gt;hola&lt;/script&gt;');
+  console.log('Reporte OK: descarga firmada sin enviar el token a S3.');
+}
+module.exports.finished = reportDownloadTests().catch(error => { process.exitCode = 1; throw error; });

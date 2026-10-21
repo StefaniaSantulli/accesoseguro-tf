@@ -123,7 +123,7 @@ resource "aws_ecs_service" "api" {
   name            = "${local.name_prefix}-api"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = var.api_min_tasks
+  desired_count   = var.deployment_ready ? var.api_min_tasks : 0
   launch_type     = "FARGATE"
 
   # Rolling update: nunca baja de las tasks sanas que hay (100%) y puede
@@ -168,8 +168,14 @@ resource "aws_appautoscaling_target" "api" {
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
-  min_capacity       = var.api_min_tasks
+  min_capacity       = var.deployment_ready ? var.api_min_tasks : 0
   max_capacity       = max(var.api_max_tasks, var.api_min_tasks)
+
+  suspended_state {
+    dynamic_scaling_in_suspended  = !var.deployment_ready
+    dynamic_scaling_out_suspended = !var.deployment_ready
+    scheduled_scaling_suspended   = !var.deployment_ready
+  }
 }
 
 resource "aws_appautoscaling_policy" "api_cpu" {
