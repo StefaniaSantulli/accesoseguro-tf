@@ -15,6 +15,7 @@ module "lambdas" {
   memory_size   = each.value.memory_size
   role_arn      = data.aws_iam_role.lab_role.arn
   environment   = each.value.environment
+  layers        = contains(["vencer-permisos", "notificar-mail"], each.key) ? [aws_lambda_layer_version.notificaciones.arn] : []
 
   # Solo las que necesitan RDS van dentro de la VPC (subredes de app).
   vpc_config = each.value.in_vpc ? {
@@ -39,15 +40,40 @@ resource "aws_lambda_event_source_mapping" "sqs" {
 
   # Si falla un mensaje del lote, solo ese vuelve a la cola.
   function_response_types = ["ReportBatchItemFailures"]
+  dynamic "scaling_config" {
+    for_each = each.key == "notificaciones" ? [1] : []
+    content {
+      maximum_concurrency = 2
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
-# EventBridge: vencer-permisos cada 15 minutos (cron administrado).
+# EventBridge: vencimientos y recuperación periódica de avisos pendientes.
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_event_rule" "vencer_permisos" {
   name                = "${local.name_prefix}-vencer-permisos"
   description         = "Dispara vencer-permisos y republica eventos pendientes"
   schedule_expression = var.vencer_permisos_schedule
+}
+
+resource "aws_lambda_layer_version" "notificaciones" {
+  layer_name               = "${local.name_prefix}-notificaciones"
+  filename                 = "${path.module}/.build/notificaciones-layer.zip"
+  source_code_hash         = fileexists("${path.module}/.build/notificaciones-layer.zip") ? filebase64sha256("${path.module}/.build/notificaciones-layer.zip") : null
+  compatible_runtimes      = ["python3.12"]
+  compatible_architectures = ["x86_64"]
+
+  lifecycle {
+    precondition {
+      condition = try(trimspace(file("${path.module}/.build/notificaciones-layer.sha256")) == sha256(join("", [
+        filesha256("${path.module}/../../backend/notifications.py"),
+        filesha256("${path.module}/../../backend/notification_jobs.py"),
+        filesha256("${path.module}/../../lambdas/layers/notificaciones/requirements.txt"),
+      ])), false) && var.lambda_runtime == "python3.12"
+      error_message = "Ejecutar make layer antes de planificar; la Layer requiere Python 3.12/x86_64 y fuentes actualizadas."
+    }
+  }
 }
 
 resource "aws_cloudwatch_event_target" "vencer_permisos" {

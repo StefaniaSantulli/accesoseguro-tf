@@ -38,3 +38,11 @@ outputs:         ## Muestra URLs y nombres útiles
 
 destroy:         ## Borra la infra (el bucket del state se conserva)
 	cd $(INFRA) && terraform destroy
+
+.PHONY: layer test
+layer:           ## Empaqueta dependencias Linux y código de notificaciones para Lambda
+	python3 scripts/build-notifications-layer.py
+
+test:            ## Pruebas de Python y frontend (sin AWS)
+	python3 -m unittest discover -s tests -v
+	node tests/test_frontend_auth.cjs

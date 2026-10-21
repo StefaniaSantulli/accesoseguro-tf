@@ -3,7 +3,7 @@
 # las notificaciones a las personas.
 # =============================================================================
 
-# Flask publica cada evento una sola vez y SNS lo reparte a las colas.
+# El outbox publica cada evento con ID estable; SNS lo reparte a las colas.
 resource "aws_sns_topic" "eventos_solicitud" {
   name              = "${local.name_prefix}-eventos-solicitud"
   kms_master_key_id = aws_kms_key.main.arn
@@ -59,35 +59,74 @@ resource "aws_sns_topic_subscription" "colas" {
   protocol             = "sqs"
   endpoint             = module.sqs[each.key].queue_arn
   raw_message_delivery = true
+  redrive_policy       = jsonencode({ deadLetterTargetArn = aws_sqs_queue.entrega_eventos_dlq[each.key].arn })
 
   # Sin la policy de la cola, SNS no puede entregar y los mensajes se pierden.
-  depends_on = [aws_sqs_queue_policy.this]
+  depends_on = [aws_sqs_queue_policy.this, aws_sqs_queue_policy.entrega_eventos_dlq]
 }
 
 # -----------------------------------------------------------------------------
 # Notificaciones por mail con SNS (reemplaza a SES: en el Learner Lab el
 # LabRole no puede verificar identidades de SES, así que SES no puede mandar).
 #
-# Cada dirección se suscribe al tópico y tiene que CONFIRMAR la suscripción con
-# el link que le manda AWS. La Lambda notificar-mail publica cada aviso con el
-# atributo "destinatario", y la filter policy de cada suscripción hace que cada
-# persona reciba solo lo suyo:
-#   - transportista: solo los avisos con su propio mail
-#   - responsable:   los suyos + los dirigidos a su sede (solicitud nueva)
+# gestionar-usuarios administra email + filtro destinatario_id desde Cognito.
+# Cada dirección debe confirmar. El correo nunca se usa como identificador.
 # -----------------------------------------------------------------------------
 resource "aws_sns_topic" "notificaciones_mail" {
   name              = "${local.name_prefix}-notificaciones-mail"
   kms_master_key_id = aws_kms_key.main.arn
 }
 
-resource "aws_sns_topic_subscription" "notificaciones_mail" {
-  for_each = var.notificaciones_suscriptores
+# Terraform deja de administrar las suscripciones existentes, sin borrarlas.
+# La Lambda migra sus filtros al ID verificado. Evita dos administradores
+# que se pisen entre sí (Terraform y cambios de rol en tiempo de ejecución).
+removed {
+  from = aws_sns_topic_subscription.notificaciones_mail
+  lifecycle {
+    destroy = false
+  }
+}
 
-  topic_arn           = aws_sns_topic.notificaciones_mail.arn
-  protocol            = "email"
-  endpoint            = each.key
-  filter_policy_scope = "MessageAttributes"
-  filter_policy = jsonencode({
-    destinatario = concat([lower(each.key)], startswith(each.value, "responsable-sede-") ? [each.value] : [])
+# Si SNS no puede entregar a SQS, la DLQ de procesamiento no alcanza:
+# hace falta una DLQ de entrega en la suscripción SNS.
+resource "aws_sqs_queue" "entrega_eventos_dlq" {
+  for_each                  = local.sns_subscribed_queues
+  name                      = "${local.name_prefix}-entrega-${each.key}-dlq"
+  message_retention_seconds = 1209600
+  kms_master_key_id         = aws_kms_key.main.arn
+}
+
+resource "aws_sqs_queue_policy" "entrega_eventos_dlq" {
+  for_each  = local.sns_subscribed_queues
+  queue_url = aws_sqs_queue.entrega_eventos_dlq[each.key].url
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "sns.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.entrega_eventos_dlq[each.key].arn
+      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.eventos_solicitud.arn } }
+    }]
+  })
+}
+
+resource "aws_sqs_queue" "entrega_mail_dlq" {
+  name                      = "${local.name_prefix}-entrega-mail-dlq"
+  message_retention_seconds = 1209600
+  kms_master_key_id         = aws_kms_key.main.arn
+}
+
+resource "aws_sqs_queue_policy" "entrega_mail_dlq" {
+  queue_url = aws_sqs_queue.entrega_mail_dlq.url
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "sns.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.entrega_mail_dlq.arn
+      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.notificaciones_mail.arn } }
+    }]
   })
 }

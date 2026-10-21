@@ -100,3 +100,11 @@ output "notificaciones_topic_arn" {
   description = "Tópico SNS que manda las notificaciones por mail."
   value       = aws_sns_topic.notificaciones_mail.arn
 }
+
+output "notificaciones_dlq" {
+  description = "Colas de fallos de entrega SNS; revisar antes de reintentar."
+  value = merge(
+    { for name, queue in aws_sqs_queue.entrega_eventos_dlq : name => queue.url },
+    { email = aws_sqs_queue.entrega_mail_dlq.url }
+  )
+}

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import time
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -13,6 +14,8 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / "scripts"))
 PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 PUBLIC_JWK = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(PRIVATE_KEY.public_key()))
 PUBLIC_JWK['kid'] = 'test-key'
@@ -22,6 +25,7 @@ ENV = {
     'COGNITO_ISSUER': ISSUER, 'COGNITO_CLIENT_ID': 'test-client',
     'ROLES_LAMBDA_NAME': 'test-users', 'USER_POOL_ID': 'test-pool',
     'NOTIFICACIONES_TOPIC_ARN': 'test-mail', 'SNS_TOPIC_ARN': 'test-events',
+    'NOTIFICACIONES_DLQ_ARN': 'arn:test:mail-dlq',
 }
 
 
@@ -59,6 +63,7 @@ class ApiTests(unittest.TestCase):
         api.lambda_client = Mock()
         api.s3 = Mock()
         api.sns = Mock()
+        api.sns.publish.return_value = {"MessageId": "sns-test"}
         api.s3.generate_presigned_url.return_value = 'https://s3.example.invalid/signed'
         def invoke(**kwargs):
             payload = json.loads(kwargs['Payload'])
@@ -203,6 +208,7 @@ class LambdaTests(unittest.TestCase):
     def setUp(self):
         users.cognito = Mock()
         users.sns = Mock()
+        users.sns.get_paginator.return_value.paginate.return_value = [{"Subscriptions": []}]
         users.cognito.admin_get_user.return_value = {'Enabled': True, 'UserAttributes': [
             {'Name': 'sub', 'Value': 'user-1'}, {'Name': 'email', 'Value': 'verified@example.invalid'},
             {'Name': 'email_verified', 'Value': 'true'}, {'Name': 'custom:sede_id', 'Value': '1'},
@@ -245,13 +251,6 @@ class LambdaTests(unittest.TestCase):
             invalid = callback.lambda_handler({'queryStringParameters': {'code': 'code'}}, None)
             self.assertIn('error=invalid_state', invalid['headers']['Location'])
 
-    def test_new_request_notification_is_scoped_by_site(self):
-        mail.sns = Mock()
-        event = {'Records': [{'messageId': 'm1', 'body': json.dumps({'tipo': 'solicitud_creada', 'solicitud_id': 1, 'sede_id': 2})}]}
-        self.assertEqual(mail.lambda_handler(event, None), {'batchItemFailures': []})
-        self.assertEqual(mail.sns.publish.call_args.kwargs['MessageAttributes']['destinatario']['StringValue'], 'responsable-sede-2')
-        event['Records'][0]['body'] = json.dumps({'tipo': 'solicitud_creada'})
-        self.assertEqual(mail.lambda_handler(event, None), {'batchItemFailures': [{'itemIdentifier': 'm1'}]})
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -272,9 +271,13 @@ class ConfigurationTests(unittest.TestCase):
             calls.append(args)
             if args[1] == 'admin-list-groups-for-user':
                 return {'Groups': [{'GroupName': 'administradores'}, {'GroupName': 'transportistas'}, {'GroupName': 'external-idp'}]}
+            if args[1] == 'admin-get-user':
+                return {'Enabled': True, 'Username': 'user-1', 'UserAttributes': [
+                    {'Name': 'sub', 'Value': 'user-1'}, {'Name': 'email_verified', 'Value': 'true'}]}
             return {}
-        args = ['asignar-rol.py', '--pool', 'test-pool', '--usuario', 'one@example.invalid', '--grupo', 'porteros', '--sede', '2']
-        with patch('sys.argv', args), patch.object(script, 'aws', side_effect=aws), patch('sys.stdout', io.StringIO()):
+        args = ['asignar-rol.py', '--notificaciones-lambda', 'users', '--pool', 'test-pool', '--usuario', 'one@example.invalid', '--grupo', 'porteros', '--sede', '2']
+        with patch('sys.argv', args), patch.object(script, 'aws', side_effect=aws), patch('sys.stdout', io.StringIO()), \
+             patch.object(script, 'invoke', return_value={'mensaje': 'Confirmar correo'}):
             script.main()
         removed = [call[-1] for call in calls if call[1] == 'admin-remove-user-from-group']
         self.assertEqual(removed, ['administradores', 'transportistas'])

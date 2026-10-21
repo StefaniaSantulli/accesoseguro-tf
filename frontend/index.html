@@ -29,6 +29,12 @@
 <main class="steps">
   <div class="wrap">
     <div class="row" id="steps-container"></div>
+    <section class="card-step" style="margin-top:2rem">
+      <h2>Avisos por correo</h2>
+      <p>Activá tu correo y confirmá el mensaje de Amazon SNS para recibir avisos. Si cambió tu rol o sede, actualizá también esta suscripción.</p>
+      <button class="btn-step" id="activar-correos" type="button">Activar o actualizar correos</button>
+      <p id="estado-correos" role="status" aria-live="polite"></p>
+    </section>
   </div>
 </main>
 
@@ -39,9 +45,23 @@
 <!-- config.js lo genera Terraform (URL de la API y del login). En local no existe y se usa localhost. -->
 <script src="config.js" onerror="window.APP_CONFIG = null"></script>
 <script src="assets/auth.js"></script>
+<script src="assets/api.js"></script>
 <script>
 const rol = requireRole(GRUPOS_VALIDOS);
 renderNav();
+document.getElementById("activar-correos").addEventListener("click", async function () {
+  this.disabled = true;
+  const estado = document.getElementById("estado-correos");
+  estado.textContent = "Consultando la suscripción...";
+  try {
+    const result = await apiPostJSON("/api/notificaciones/suscripcion", {});
+    estado.textContent = result.mensaje;
+  } catch (error) {
+    estado.textContent = error.message;
+  } finally {
+    this.disabled = false;
+  }
+});
 
 const PASOS_CONDUCTOR = [
   { href: "nueva-solicitud.html", titulo: "Nueva solicitud de acceso", texto: "Cargá tus datos y adjuntá documentación de respaldo." },
