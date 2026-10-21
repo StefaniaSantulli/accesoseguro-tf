@@ -2,8 +2,7 @@
 
 82.08 Cloud Computing · Terraform sobre AWS Learner Lab
 
-Este repositorio levanta con Terraform la arquitectura de **AccesoSeguro** (versión del
-17/10/2026, con la devolución de la cátedra del 16/10): sitio estático en S3, login con la
+Este repositorio levanta con Terraform la arquitectura de **AccesoSeguro** : sitio estático en S3, login con la
 Hosted UI de Cognito, API Flask en ECS Fargate detrás de un ALB, RDS PostgreSQL Multi-AZ,
 7 Lambdas, SNS + SQS con DLQ y EventBridge; los avisos por mail salen por SNS. Sin EC2 y sin NAT Gateway.
 
