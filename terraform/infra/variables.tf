@@ -48,16 +48,6 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
-variable "az_count" {
-  description = "Compatibilidad con configuraciones anteriores: el proyecto usa exactamente us-east-1a y us-east-1b."
-  type        = number
-  default     = 2
-  validation {
-    condition     = var.az_count == 2
-    error_message = "El proyecto está fijado a dos zonas: us-east-1a y us-east-1b."
-  }
-}
-
 variable "interface_endpoints" {
   description = "Servicios con VPC Endpoint de tipo interface (reemplazan al NAT Gateway)."
   type        = list(string)
@@ -129,10 +119,15 @@ variable "lambda_runtime" {
   default     = "python3.12"
 }
 
-variable "vencer_permisos_schedule" {
-  description = "Frecuencia de vencimientos y recuperación de pendientes (EventBridge)."
-  type        = string
-  default     = "rate(1 minute)"
+variable "vencer_permisos_intervalo_minutos" {
+  description = "Cada cuántos minutos EventBridge ejecuta vencer-permisos (vencimientos y reintento de avisos pendientes). La alarma de avisos atrasados se ajusta a este valor."
+  type        = number
+  default     = 15
+
+  validation {
+    condition     = var.vencer_permisos_intervalo_minutos >= 1 && floor(var.vencer_permisos_intervalo_minutos) == var.vencer_permisos_intervalo_minutos
+    error_message = "El intervalo debe ser un número entero de minutos, mayor o igual a 1."
+  }
 }
 
 variable "permiso_vigencia_segundos" {
@@ -249,17 +244,6 @@ variable "documentos_lifecycle" {
 # =============================================================================
 # Eventos y mails
 # =============================================================================
-variable "notificaciones_suscriptores" {
-  description = "LEGADO: dejar vacío. gestionar-usuarios administra suscripciones verificadas por sub y sede."
-  type        = map(string)
-  default     = {}
-
-  validation {
-    condition     = length(var.notificaciones_suscriptores) == 0
-    error_message = "Quitar valores antiguos y migrar cada usuario con scripts/notificaciones.py; ver docs/notificaciones.md."
-  }
-}
-
 variable "alarm_email" {
   description = "Mail que recibe las alarmas de CloudWatch. Vacío = sin suscripción."
   type        = string

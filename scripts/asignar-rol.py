@@ -9,18 +9,9 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
-from notification_admin import invoke, outputs
+from notification_admin import aws, invoke, outputs, usuario_verificado
 
 GRUPOS = {"transportistas", "porteros", "responsables_sede"}
-GRUPOS_ANTERIORES = GRUPOS | {"administradores"}
-
-
-def aws(region, *args):
-    result = subprocess.run(
-        ["aws", *args, "--region", region, "--output", "json", "--no-cli-pager"],
-        check=True, capture_output=True, text=True,
-    )
-    return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
 def main():
@@ -43,16 +34,16 @@ def main():
             ["terraform", f"-chdir={infra}", "output", "-raw", "cognito_user_pool_id"], text=True,
         ).strip()
     common = ["--user-pool-id", pool, "--username", args.usuario]
-    user = aws(args.region, "cognito-idp", "admin-get-user", *common)
-    attrs = {a["Name"]: a["Value"] for a in user["UserAttributes"]}
-    if not user.get("Enabled") or attrs.get("email_verified") != "true":
-        parser.error("La cuenta debe estar habilitada y tener correo verificado")
+    try:
+        user, attrs = usuario_verificado(args.region, pool, args.usuario)
+    except ValueError as exc:
+        parser.error(str(exc))
     function = args.notificaciones_lambda or outputs()["lambda_functions"]["gestionar-usuarios"]
     # Comprobar que existe el grupo antes de retirar permisos anteriores.
     aws(args.region, "cognito-idp", "get-group", "--user-pool-id", pool, "--group-name", args.grupo)
     groups = aws(args.region, "cognito-idp", "admin-list-groups-for-user", *common)["Groups"]
     for group in groups:
-        if group["GroupName"] in GRUPOS_ANTERIORES:
+        if group["GroupName"] in GRUPOS:
             aws(args.region, "cognito-idp", "admin-remove-user-from-group", *common, "--group-name", group["GroupName"])
     if args.sede is not None:
         updates = json.dumps([{"Name": "custom:sede_id", "Value": str(args.sede)}])

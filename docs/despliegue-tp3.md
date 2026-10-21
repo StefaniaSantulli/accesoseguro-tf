@@ -1,10 +1,10 @@
 # Despliegue completo del TP3
 
-## Qué se corrigió
+## Qué hace
 
-El workflow anterior hacía `plan`, pero no ejecutaba `apply`, no publicaba la imagen y no preparaba la base. Además, cada proceso de Flask intentaba crear tablas al arrancar. El workflow **desplegar-aplicacion** ahora completa esas etapas y comprueba el resultado.
+El workflow **desplegar-aplicacion** ejecuta `init`, `validate`, `plan` y `apply`, publica la imagen de la API, prepara la base y comprueba el resultado. Flask no crea tablas al arrancar: lo hace una tarea previa.
 
-Se conservan los servicios, la red, HTTP, las zonas `us-east-1a` y `us-east-1b`, las siete Lambdas y el workaround de Cognito. La tarea de inicialización usa la misma definición de ECS, imagen, subredes y permisos que la API, ejecuta `python manage_db.py upgrade` y termina. No agrega otro servicio permanente. AWS admite este uso de [tareas puntuales de ECS](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/standalone-tasks.html).
+La tarea de inicialización usa la misma definición de ECS, imagen, subredes y permisos que la API, ejecuta `python manage_db.py upgrade` y termina. No agrega otro servicio permanente. AWS admite este uso de [tareas puntuales de ECS](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/standalone-tasks.html).
 
 ## Cómo ejecutarlo
 
@@ -12,7 +12,7 @@ Se conservan los servicios, la red, HTTP, las zonas `us-east-1a` y `us-east-1b`,
 2. Iniciar el Learner Lab. En el repositorio que ejecutará Actions, configurar los secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y `AWS_SESSION_TOKEN` vigentes.
 3. Si ya hay un despliegue, configurar `TF_STATE_BUCKET` con **su mismo bucket de state**. Si se omite, se usa `accesoseguro-tfstate-<account_id>`. No cambiarlo para resolver un error: se perdería la referencia a la infraestructura existente.
 4. Ir a **Actions → desplegar-aplicacion → Run workflow** y seleccionar la rama/commit de la entrega.
-5. Abrir la URL que aparece al finalizar. Crear usuarios por Cognito; asignar los roles internos con `scripts/asignar-rol.py`, como antes. Cada destinatario debe confirmar su suscripción SNS para recibir correos.
+5. Abrir la URL que aparece al finalizar. Crear usuarios por Cognito; asignar los roles internos con `make grupo` (`scripts/asignar-rol.py`). Cada destinatario debe confirmar su suscripción SNS para recibir correos.
 
 El script está configurado para este proyecto: `accesoseguro/dev`, región `us-east-1`. No requiere subir una imagen, ejecutar SQL o crear el bucket del state a mano. Sí requiere las credenciales y permisos del Lab; ningún repositorio puede generar esas credenciales por sí solo.
 
@@ -39,7 +39,7 @@ flowchart TD
   H --> I[Arrancar API y comprobar salud, sitio y reporte]
 ```
 
-La actualización tiene una ventana de mantenimiento: se detiene la API y se pausa el procesamiento que necesita RDS. Auditoría sigue con su configuración anterior. Si falla la publicación de la imagen o la inicialización de la base, no se habilita la aplicación como si el despliegue hubiera terminado.
+La actualización tiene una ventana de mantenimiento: se detiene la API y se pausa el procesamiento que necesita RDS. El consumidor de auditoría sigue activo, porque solo escribe en S3. Si falla la publicación de la imagen o la inicialización de la base, no se habilita la aplicación como si el despliegue hubiera terminado.
 
 La imagen usa el SHA completo del commit como tag inmutable. Al repetir el mismo commit se reutiliza la imagen ya publicada. El workflow comprueba el código de salida de la tarea de inicialización, la revisión y cantidad de tareas de ECS, `/health`, el sitio y una invocación real de reportes. `/health` devuelve 503 si no puede acceder a la versión esperada del esquema.
 
@@ -67,7 +67,7 @@ Los secrets no se transfieren a los PR de forks. En ese caso se informa explíci
 4. Guarda **válido** o **rechazado**, el motivo y la versión en `documento_validacion`, relacionada por clave foránea con `solicitud`.
 5. El responsable ve el resultado. Si hay un documento adjunto, no puede aprobar hasta que sea válido. El enlace abre la versión validada, incluso si luego se vuelve a escribir la misma clave en S3.
 
-El adjunto sigue siendo opcional, como en el formulario previo. Esta validación es técnica y básica: no analiza malware, autenticidad ni contenido legal del PDF. El transportista puede reemplazar un archivo pendiente/rechazado desde **Mis solicitudes**. Los adjuntos históricos no tienen una validación comprobada: mientras la solicitud siga pendiente, deben volver a cargarse. No se califican automáticamente como válidos.
+El adjunto es opcional. Esta validación es técnica y básica: no analiza malware, autenticidad ni contenido legal del PDF. El transportista puede reemplazar un archivo pendiente/rechazado desde **Mis solicitudes**.
 
 Los eventos repetidos o atrasados no sobrescriben un resultado más reciente. Se compara el `sequencer` para la misma clave, como indica [S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/notification-content-structure.html). Si falla S3 o RDS, el mensaje se reintenta mediante la cola existente; solo se reportan los mensajes fallidos, según el mecanismo de [respuestas parciales de Lambda/SQS](https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-errorhandling.html).
 
@@ -80,10 +80,10 @@ Los eventos repetidos o atrasados no sobrescriben un resultado más reciente. Se
 
 Sin registros, el CSV contiene únicamente encabezados. Se rechazan rangos inválidos y reportes de más de 10.000 filas, pidiendo acotar las fechas. Se escapan inicios de fórmulas en los campos de texto; es una mitigación de [CSV injection](https://community.owasp.org/attacks/CSV_Injection), no una garantía sobre posteriores transformaciones de la planilla.
 
-Las cuatro Lambdas que acceden a RDS comparten la Layer existente, ahora ampliada. Contiene el driver PostgreSQL, SQLAlchemy, el código compartido y los certificados de RDS, con dependencias para Python 3.12 y Linux x86_64, siguiendo los requisitos de [AWS Lambda Layers](https://docs.aws.amazon.com/lambda/latest/dg/python-layers.html).
+Las cuatro Lambdas que acceden a RDS comparten una Layer. Contiene el driver PostgreSQL, SQLAlchemy, el código compartido y los certificados de RDS, con dependencias para Python 3.12 y Linux x86_64, siguiendo los requisitos de [AWS Lambda Layers](https://docs.aws.amazon.com/lambda/latest/dg/python-layers.html).
 
 ## Correspondencia con TP3
 
-La consigna proporcionada exige módulos propios/externos, variables/outputs, al menos cuatro funciones y tres metaargumentos, un diagrama alineado, README y un pipeline que pueda ejecutar `init`, `validate`, `plan`, `apply` y que corra en el PR. Se conservan los módulos, funciones y metaargumentos documentados en el README. Se incorpora el despliegue completo, sin cambiar la arquitectura. El diagrama actualizado está en el README y en `docs/arquitectura.mmd`.
+La consigna proporcionada exige módulos propios/externos, variables/outputs, al menos cuatro funciones y tres metaargumentos, un diagrama alineado, README y un pipeline que pueda ejecutar `init`, `validate`, `plan`, `apply` y que corra en el PR. Se conservan los módulos, funciones y metaargumentos documentados en el README. El pipeline incluye el despliegue completo. El diagrama actualizado está en el README y en `docs/arquitectura.mmd`.
 
-Aunque la consigna permite mocks, estas dos Lambdas dejan de simular sus operaciones sobre RDS. El circuito SNS de auditoría queda fuera de estos cambios.
+Aunque la consigna permite datos simulados, las Lambdas de documentos, reportes, vencimientos y correos operan sobre RDS real.

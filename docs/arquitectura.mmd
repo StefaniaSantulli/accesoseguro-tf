@@ -38,7 +38,7 @@ flowchart LR
   U -->|PUT firmado HTTPS| DOCS[S3 documentos]
   DOCS --> QD[SQS documentos y DLQ] --> VAL
   ECS -->|Eventos guardados en outbox| SNS[SNS eventos-solicitud]
-  EB[EventBridge cada minuto configurable] --> VEN --> SNS
+  EB[EventBridge cada 15 minutos configurable] --> VEN --> SNS
   SNS --> QA[SQS auditoría y DLQ] --> AUD[Lambda archivar-auditoria]
   AUD --> ARCH[S3 auditoría]
   REP -->|CSV en reportes/| ARCH

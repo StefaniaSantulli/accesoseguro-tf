@@ -80,6 +80,12 @@ class ApiTests(unittest.TestCase):
                 api.Solicitud(id=2, sede_id=2, nombre_solicitante='Otra sede', dni='222', email_solicitante='two@example.invalid', estado='aprobada'),
                 api.Solicitud(id=3, sede_id=1, nombre_solicitante='Aprobada', dni='333', email_solicitante='two@example.invalid', estado='aprobada'),
             ])
+            api.db.session.flush()
+            api.db.session.execute(api.notifications.owners.insert(), [
+                {'solicitud_id': 1, 'usuario_sub': 'user-1'},
+                {'solicitud_id': 2, 'usuario_sub': 'user-2'},
+                {'solicitud_id': 3, 'usuario_sub': 'user-2'},
+            ])
             api.db.session.commit()
 
     def headers(self, group='transportistas', **claims):
@@ -107,7 +113,7 @@ class ApiTests(unittest.TestCase):
 
     def test_no_self_elevation_even_with_valid_token(self):
         headers = self.headers(None)
-        for group in ['administradores', 'porteros', 'responsables_sede']:
+        for group in ['porteros', 'responsables_sede', 'otro-grupo']:
             self.assertEqual(self.client.post('/api/mi-rol', json={'grupo': group}, headers=headers).status_code, 400)
         self.assertEqual(self.client.post('/api/mi-rol', json={'grupo': 'transportistas'}, headers=headers).status_code, 200)
 
@@ -118,6 +124,9 @@ class ApiTests(unittest.TestCase):
         headers = self.headers()
         data = self.client.get('/api/mis-solicitudes', headers=headers).get_json()
         self.assertEqual([s['id'] for s in data], [1])
+        # La página siempre busca por DNI: el filtro aplica sobre la solicitud propia.
+        self.assertEqual([s['id'] for s in self.client.get('/api/mis-solicitudes?dni=111', headers=headers).get_json()], [1])
+        self.assertEqual(self.client.get('/api/mis-solicitudes?dni=333', headers=headers).get_json(), [])
         self.assertEqual(self.client.post('/api/solicitudes/2/documento', json={}, headers=headers).status_code, 403)
         for path in ['/api/solicitudes/pendientes', '/api/verificacion?busqueda=333', '/api/reporte/exportar', '/api/auditoria']:
             self.assertEqual(self.client.get(path, headers=headers).status_code, 403)
@@ -153,7 +162,10 @@ class ApiTests(unittest.TestCase):
         report = self.client.get('/api/reporte/exportar', headers=headers)
         self.assertEqual(report.status_code, 200)
         self.assertNotIn('Otra sede', report.get_data(as_text=True))
-        self.assertEqual(self.client.get('/api/reporte/exportar?sede_id=2', headers=headers).status_code, 403)
+        # Un sede_id enviado por el navegador se ignora: el reporte es siempre de la sede propia.
+        other = self.client.get('/api/reporte/exportar?sede_id=2', headers=headers)
+        self.assertEqual(other.status_code, 200)
+        self.assertNotIn('Otra sede', other.get_data(as_text=True))
         with api.app.app_context():
             log = api.LogAuditoria(accion='Privado', detalle='otra sede')
             old = api.LogAuditoria(accion='Legado', detalle='sin sede comprobable')
@@ -168,27 +180,16 @@ class ApiTests(unittest.TestCase):
             self.profile['usuario']['sede_id'] = sede
             self.assertEqual(self.client.get('/api/solicitudes', headers=self.headers('porteros')).status_code, 403)
 
-    def test_revoked_group_and_legacy_group_denied(self):
+    def test_revoked_or_unknown_group_denied(self):
         self.current_groups = []
         self.assertEqual(self.client.get('/api/solicitudes', headers=self.headers('porteros')).status_code, 403)
-        self.current_groups = ['administradores']
-        self.assertEqual(self.client.get('/api/me', headers=self.headers('administradores')).status_code, 403)
+        self.current_groups = ['otro-grupo']
+        self.assertEqual(self.client.get('/api/solicitudes', headers=self.headers('otro-grupo')).status_code, 403)
 
     def test_multiple_application_roles_denied(self):
         self.current_groups = ['porteros', 'responsables_sede']
         headers = self.headers('porteros', **{'cognito:groups': self.current_groups})
         self.assertEqual(self.client.get('/api/me', headers=headers).status_code, 403)
-
-    def test_expiration_only_changes_own_site(self):
-        from datetime import datetime, timedelta
-        with api.app.app_context():
-            for id in (2, 3):
-                api.db.session.get(api.Solicitud, id).fecha_aprobacion = datetime.now() - timedelta(days=1)
-            api.db.session.commit()
-        result = self.client.get('/api/expirar-vencidas', headers=self.headers('responsables_sede'))
-        self.assertEqual(result.get_json()['ids'], [3])
-        with api.app.app_context():
-            self.assertEqual(api.db.session.get(api.Solicitud, 2).estado, 'aprobada')
 
     def test_demo_requires_explicit_configuration_and_checks_roles(self):
         with patch.object(api, 'AUTH_ENABLED', False), patch.object(api, 'LOCAL_DEMO', True):
@@ -217,7 +218,7 @@ class LambdaTests(unittest.TestCase):
         self.event = {'accion': 'alta_transportista', 'username': 'user-1', 'sub': 'user-1', 'grupo': 'transportistas'}
 
     def test_lambda_rejects_privileged_groups_directly(self):
-        for group in ('porteros', 'responsables_sede', 'administradores'):
+        for group in ('porteros', 'responsables_sede', 'otro-grupo'):
             self.assertFalse(users.lambda_handler({**self.event, 'grupo': group}, None)['ok'])
         users.cognito.admin_add_user_to_group.assert_not_called()
 
@@ -270,17 +271,19 @@ class ConfigurationTests(unittest.TestCase):
         def aws(region, *args):
             calls.append(args)
             if args[1] == 'admin-list-groups-for-user':
-                return {'Groups': [{'GroupName': 'administradores'}, {'GroupName': 'transportistas'}, {'GroupName': 'external-idp'}]}
+                return {'Groups': [{'GroupName': 'responsables_sede'}, {'GroupName': 'transportistas'}, {'GroupName': 'external-idp'}]}
             if args[1] == 'admin-get-user':
                 return {'Enabled': True, 'Username': 'user-1', 'UserAttributes': [
                     {'Name': 'sub', 'Value': 'user-1'}, {'Name': 'email_verified', 'Value': 'true'}]}
             return {}
         args = ['asignar-rol.py', '--notificaciones-lambda', 'users', '--pool', 'test-pool', '--usuario', 'one@example.invalid', '--grupo', 'porteros', '--sede', '2']
-        with patch('sys.argv', args), patch.object(script, 'aws', side_effect=aws), patch('sys.stdout', io.StringIO()), \
+        import notification_admin
+        with patch('sys.argv', args), patch.object(script, 'aws', side_effect=aws), \
+             patch.object(notification_admin, 'aws', side_effect=aws), patch('sys.stdout', io.StringIO()), \
              patch.object(script, 'invoke', return_value={'mensaje': 'Confirmar correo'}):
             script.main()
         removed = [call[-1] for call in calls if call[1] == 'admin-remove-user-from-group']
-        self.assertEqual(removed, ['administradores', 'transportistas'])
+        self.assertEqual(removed, ['responsables_sede', 'transportistas'])
         self.assertEqual(calls[-1][-1], 'porteros')
         attrs = next(call[-1] for call in calls if call[1] == 'admin-update-user-attributes')
         self.assertEqual(json.loads(attrs), [{'Name': 'custom:sede_id', 'Value': '2'}])

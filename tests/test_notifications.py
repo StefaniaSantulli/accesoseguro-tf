@@ -93,7 +93,7 @@ class NotificationsTests(unittest.TestCase):
             self.assertTrue(n.publish_one(conn, self.sns, 'events', now=self.now + timedelta(minutes=2)))
         self.assertEqual(json.loads(self.sns.publish.call_args.kwargs['Message'])['evento_id'], event_id)
 
-    def test_missing_legacy_identity_stays_pending_without_email_fallback(self):
+    def test_event_without_owner_stays_pending_without_email_fallback(self):
         event_id = self.enqueue()
         self.assertFalse(self.publish(event_id))
         self.assertIsNone(self.row(event_id)['publicado'])
@@ -173,18 +173,6 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual(api.db.session.get(api.Solicitud, 1).estado, 'aprobada')
         self.assertEqual(api.LogAuditoria.query.count(), 0)
 
-    def test_legacy_link_is_explicit_and_rejects_mismatched_account(self):
-        self.request()
-        with self.assertRaises(ValueError), self.engine.begin() as conn:
-            jobs.link_legacy(conn, 'attacker', 'one@example.invalid', [1])
-        with self.engine.begin() as conn:
-            conn.execute(n.owners.delete())
-        with self.assertRaises(ValueError), self.engine.begin() as conn:
-            jobs.link_legacy(conn, 'user-1', 'other@example.invalid', [1])
-        with self.engine.begin() as conn:
-            self.assertEqual(jobs.link_legacy(conn, 'user-1', 'one@example.invalid', [1]), 1)
-            self.assertEqual(jobs.link_legacy(conn, 'user-1', 'one@example.invalid', [1]), 0)
-
     def test_partial_batch_retries_only_failed_record(self):
         handler = load('notification_batch_test', 'lambdas/notificar-mail/handler.py')
         self.request()
@@ -210,7 +198,8 @@ class ApiNotificationTests(unittest.TestCase):
         with api.app.app_context():
             row = api.db.session.execute(select(n.outbox)).mappings().one()
             self.assertIsNone(row['publicado'])
-            self.assertEqual(api.db.session.execute(select(n.owners.c.usuario_sub)).scalar_one(), 'user-1')
+            owner = select(n.owners.c.usuario_sub).where(n.owners.c.solicitud_id == response.get_json()['id'])
+            self.assertEqual(api.db.session.execute(owner).scalar_one(), 'user-1')
 
     def test_resolve_twice_does_not_create_two_events(self):
         headers = self.headers('responsables_sede')
@@ -242,11 +231,11 @@ class SubscriptionTests(unittest.TestCase):
         policy = json.loads(self.sns.subscribe.call_args.kwargs['Attributes']['FilterPolicy'])
         self.assertEqual(policy, {'destinatario_id': ['usuario:user-1']})
 
-    def test_confirmed_legacy_subscription_changes_site_in_place(self):
+    def test_confirmed_subscription_changes_site_in_place(self):
         self.sns.get_paginator.return_value.paginate.return_value = [{'Subscriptions': [
             {'Protocol': 'email', 'Endpoint': self.profile['email'], 'SubscriptionArn': 'arn:existing'}]}]
         self.sns.get_subscription_attributes.return_value = {'Attributes': {'PendingConfirmation': 'false',
-            'FilterPolicy': '{"destinatario":["one@example.invalid", "responsable-sede-1"]}'}}
+            'FilterPolicy': '{"destinatario_id":["usuario:user-1", "responsable-sede-1"]}'}}
         result = users.sincronizar_notificaciones('user-1', self.profile, ['responsables_sede'])
         self.assertEqual(result['estado'], 'confirmada')
         policy = json.loads(self.sns.set_subscription_attributes.call_args_list[0].kwargs['AttributeValue'])
@@ -254,7 +243,7 @@ class SubscriptionTests(unittest.TestCase):
         self.sns.subscribe.assert_not_called()
 
     def test_no_role_or_missing_site_cannot_subscribe_as_staff(self):
-        for groups, site in [([], '1'), (['administradores'], '1'), (['responsables_sede'], None)]:
+        for groups, site in [([], '1'), (['porteros', 'responsables_sede'], '1'), (['responsables_sede'], None)]:
             with self.assertRaises(ValueError):
                 users.sincronizar_notificaciones('user-1', {**self.profile, 'sede_id': site}, groups)
         self.sns.subscribe.assert_not_called()

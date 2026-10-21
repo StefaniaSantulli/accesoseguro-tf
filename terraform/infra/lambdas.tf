@@ -14,11 +14,12 @@ module "lambdas" {
   timeout       = each.value.timeout
   memory_size   = each.value.memory_size
   role_arn      = data.aws_iam_role.lab_role.arn
-  environment   = each.value.environment
-  layers        = contains(["vencer-permisos", "notificar-mail", "validar-documento", "generar-reporte"], each.key) ? [aws_lambda_layer_version.notificaciones.arn] : []
 
-  # Solo las que necesitan RDS van dentro de la VPC (subredes de app).
-  vpc_config = each.value.in_vpc ? {
+  # Las que usan RDS reciben el secreto de la base y la Layer (driver + código
+  # compartido), y corren dentro de la VPC (subredes de app). Las demás, fuera.
+  environment = merge(each.value.usa_rds ? local.db_secret_env : {}, each.value.environment)
+  layers      = each.value.usa_rds ? [aws_lambda_layer_version.notificaciones.arn] : []
+  vpc_config = each.value.usa_rds ? {
     subnet_ids         = module.network.subnet_ids_by_tier["app"]
     security_group_ids = [aws_security_group.this["lambda"].id]
   } : null
@@ -54,7 +55,7 @@ resource "aws_lambda_event_source_mapping" "sqs" {
 resource "aws_cloudwatch_event_rule" "vencer_permisos" {
   name                = "${local.name_prefix}-vencer-permisos"
   description         = "Dispara vencer-permisos y republica eventos pendientes"
-  schedule_expression = var.vencer_permisos_schedule
+  schedule_expression = local.vencer_permisos_schedule
   state               = var.deployment_ready ? "ENABLED" : "DISABLED"
 }
 

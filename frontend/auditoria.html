@@ -48,9 +48,9 @@ async function cargar() {
       cont.innerHTML = '<div class="panel-card"><div class="empty-state">Todavía no hay eventos registrados.</div></div>';
       return;
     }
-    cont.innerHTML = `<ul class="list-clean">${logs.map((l) => `<li><div class="meta">${l.fecha}</div><b>${l.accion}:</b> ${l.detalle}</li>`).join("")}</ul>`;
+    cont.innerHTML = `<ul class="list-clean">${logs.map((l) => `<li><div class="meta">${escapeHtml(l.fecha)}</div><b>${escapeHtml(l.accion)}:</b> ${escapeHtml(l.detalle)}</li>`).join("")}</ul>`;
   } catch (err) {
-    cont.innerHTML = `<div class="panel-card"><div class="empty-state">Error al cargar: ${err.message}</div></div>`;
+    cont.innerHTML = `<div class="panel-card"><div class="empty-state">Error al cargar: ${escapeHtml(err.message)}</div></div>`;
   }
 }
 

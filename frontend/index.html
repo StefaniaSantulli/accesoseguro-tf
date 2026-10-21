@@ -47,7 +47,7 @@
 <script src="assets/auth.js"></script>
 <script src="assets/api.js"></script>
 <script>
-const rol = requireRole(GRUPOS_VALIDOS);
+requireRole(GRUPOS_VALIDOS);
 renderNav();
 document.getElementById("activar-correos").addEventListener("click", async function () {
   this.disabled = true;
@@ -63,23 +63,8 @@ document.getElementById("activar-correos").addEventListener("click", async funct
   }
 });
 
-const PASOS_CONDUCTOR = [
-  { href: "nueva-solicitud.html", titulo: "Nueva solicitud de acceso", texto: "Cargá tus datos y adjuntá documentación de respaldo." },
-  { href: "mis-solicitudes.html", titulo: "Mis solicitudes", texto: "Consultá el estado de tus solicitudes cargadas, buscando por tu DNI." },
-];
-
-const PASOS_ADMIN = [
-  { href: "panel-aprobacion.html", titulo: "Panel de aprobación", texto: "Revisá el documento adjunto de cada solicitud y aprobá o rechazá." },
-  { href: "verificacion.html", titulo: "Verificación en portería", texto: "Buscá por DNI o patente y registrá el ingreso o egreso." },
-  { href: "reporte.html", titulo: "Reporte histórico", texto: "Exportá un CSV con el historial filtrado por sede y fechas." },
-  { href: "auditoria.html", titulo: "Log de auditoría", texto: "Acciones registradas para mi sede." },
-  { href: "solicitudes.html", titulo: "Solicitudes de mi sede", texto: "Listado general con el estado actual de cada una." },
-];
-
-// En modo Cognito se muestran solo los pasos de los grupos del usuario.
-const visibles = linksVisibles().map((l) => l.href);
-const pasos = (rol !== ROLES.TRANSPORTISTA ? PASOS_ADMIN : PASOS_CONDUCTOR).filter((p) => visibles.includes(p.href));
-document.getElementById("steps-container").innerHTML = pasos.map((p, i) => `
+// Una tarjeta por cada página que el rol del usuario puede usar (ver NAV en auth.js).
+document.getElementById("steps-container").innerHTML = linksVisibles().map((p, i) => `
   <div class="col-step">
     <div class="card-step">
       <div class="step-num">Paso 0${i + 1}</div>

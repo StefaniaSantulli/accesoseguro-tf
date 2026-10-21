@@ -33,16 +33,6 @@ output "ecr_repository_url" {
   value       = module.ecr.repository_url
 }
 
-output "docker_push_commands" {
-  description = "Comandos para construir y subir la imagen de la API."
-  value = join("\n", [
-    "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${split("/", module.ecr.repository_url)[0]}",
-    "docker build --platform linux/amd64 -t ${module.ecr.repository_url}:${var.api_image_tag} ../../backend",
-    "docker push ${module.ecr.repository_url}:${var.api_image_tag}",
-    "aws ecs update-service --cluster ${aws_ecs_cluster.main.name} --service ${aws_ecs_service.api.name} --force-new-deployment --region ${var.region}",
-  ])
-}
-
 output "ecs_cluster_name" {
   description = "Cluster de ECS."
   value       = aws_ecs_cluster.main.name
@@ -103,10 +93,7 @@ output "notificaciones_topic_arn" {
 
 output "notificaciones_dlq" {
   description = "Colas de fallos de entrega SNS; revisar antes de reintentar."
-  value = merge(
-    { for name, queue in aws_sqs_queue.entrega_eventos_dlq : name => queue.url },
-    { email = aws_sqs_queue.entrega_mail_dlq.url }
-  )
+  value       = { for name, queue in aws_sqs_queue.entrega_dlq : name => queue.url }
 }
 
 output "deployment" {

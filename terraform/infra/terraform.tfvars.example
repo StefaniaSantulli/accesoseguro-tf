@@ -6,11 +6,9 @@ environment  = "dev"
 # Versión de la imagen de la API que corre ECS (nunca latest).
 api_image_tag = "v1.1"
 
-# Notificaciones por mail con SNS (cada mail confirma la suscripción).
-# Las suscripciones se activan desde la web o scripts/notificaciones.py.
-notificaciones_suscriptores = {}
-permiso_vigencia_segundos = 86400 # 24 horas desde aprobación
-vencer_permisos_schedule = "rate(1 minute)"
+# Vencimiento de permisos aprobados y no usados.
+permiso_vigencia_segundos         = 86400 # 24 horas desde la aprobación
+vencer_permisos_intervalo_minutos = 15    # frecuencia de la Lambda vencer-permisos
 
 # Mail que recibe las alarmas (vacío = sin suscripción).
 alarm_email = ""

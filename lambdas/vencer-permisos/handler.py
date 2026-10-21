@@ -16,13 +16,6 @@ TOPIC_ARN = os.environ["SNS_TOPIC_ARN"]
 def lambda_handler(event, context):
     engine = notification_jobs.database_engine()
     try:
-        if event.get("accion") == "vincular_solicitudes":
-            # Solo invocación administrativa IAM; no existe endpoint web.
-            with engine.begin() as conn:
-                count = notification_jobs.link_legacy(conn, event["sub"], event["email"], event["solicitudes"])
-            return {"vinculadas": count}
-        if event.get("accion"):
-            raise ValueError("Acción desconocida")
         with engine.begin() as conn:
             expired = notification_jobs.expire(conn, int(os.environ["SEGUNDOS_VENCIMIENTO"]))
         published = failed = 0

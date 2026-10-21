@@ -87,18 +87,21 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage" {
   alarm_actions       = [aws_sns_topic.alarmas.arn]
 }
 
+# vencer-permisos publica EdadPendiente una vez por ejecución: el período sigue
+# a su frecuencia y hacen falta dos períodos seguidos para alarmar.
 resource "aws_cloudwatch_metric_alarm" "outbox_atrasado" {
   alarm_name          = "${local.name_prefix}-avisos-pendientes"
   namespace           = "AccesoSeguro/Notificaciones"
   metric_name         = "EdadPendiente"
   dimensions          = { FunctionName = module.lambdas["vencer-permisos"].function_name }
   statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 900
+  period              = var.vencer_permisos_intervalo_minutos * 60
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  threshold           = local.outbox_edad_maxima_segundos
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "breaching"
-  alarm_description   = "Hay eventos sin publicar hace más de 15 minutos o el recuperador no emite métricas."
+  alarm_description   = "Hay eventos sin publicar hace más de ${local.outbox_edad_maxima_segundos / 60} minutos o el recuperador no emite métricas."
   alarm_actions       = [aws_sns_topic.alarmas.arn]
 }
 
@@ -127,26 +130,13 @@ resource "aws_cloudwatch_metric_alarm" "avisos_fallidos" {
   alarm_actions       = [aws_sns_topic.alarmas.arn]
 }
 
-resource "aws_cloudwatch_metric_alarm" "entrega_eventos_dlq" {
-  for_each            = local.sns_subscribed_queues
+# Cualquier mensaje en una DLQ de entrega SNS (auditoría, notificaciones o mail).
+resource "aws_cloudwatch_metric_alarm" "entrega_dlq" {
+  for_each            = local.sns_delivery_dlqs
   alarm_name          = "${local.name_prefix}-entrega-${each.key}-fallida"
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
-  dimensions          = { QueueName = aws_sqs_queue.entrega_eventos_dlq[each.key].name }
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 0
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alarmas.arn]
-}
-
-resource "aws_cloudwatch_metric_alarm" "entrega_mail_dlq" {
-  alarm_name          = "${local.name_prefix}-entrega-correo-fallida"
-  namespace           = "AWS/SQS"
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  dimensions          = { QueueName = aws_sqs_queue.entrega_mail_dlq.name }
+  dimensions          = { QueueName = aws_sqs_queue.entrega_dlq[each.key].name }
   statistic           = "Maximum"
   period              = 300
   evaluation_periods  = 1

@@ -21,12 +21,12 @@ def sincronizar_notificaciones(sub, perfil, grupos):
     """Un solo administrador de suscripciones: esta función, no Terraform.
 
     Tanto la web como el script usan identidad/rol verificados en Cognito.
-    Las suscripciones anteriores por email se migran al confirmar su titular.
+    Si la suscripción ya existe se actualiza en el mismo ARN (cambio de rol o sede).
     """
     if not TOPIC_ARN or not DLQ_ARN:
         raise ValueError("Falta configurar el tópico")
     roles = set(grupos) & {"transportistas", "porteros", "responsables_sede"}
-    if len(roles) != 1 or "administradores" in grupos:
+    if len(roles) != 1:
         raise ValueError("Asignar un único rol antes de activar correos")
     recipient = f"usuario:{sub}"
     filters = [recipient]

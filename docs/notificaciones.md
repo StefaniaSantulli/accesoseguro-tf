@@ -9,9 +9,9 @@ La aplicación lleva una libreta de avisos pendientes. Cuando alguien crea una s
 3. **SQS:** guarda el trabajo hasta que pueda procesarse.
 4. **Lambda `notificar-mail`:** consulta RDS para reconocer avisos ya procesados, comprueba que exista un destinatario confirmado y prepara el texto.
 5. **SNS de correos:** entrega el aviso a las direcciones cuyos filtros coinciden.
-6. **Recuperador `vencer-permisos`:** consulta RDS de verdad, vence permisos y vuelve a intentar publicar los eventos pendientes. Por defecto corre cada minuto.
+6. **Recuperador `vencer-permisos`:** consulta RDS de verdad, vence permisos y vuelve a intentar publicar los eventos pendientes. Por defecto corre cada 15 minutos (`vencer_permisos_intervalo_minutos`).
 
-La publicación se intenta inmediatamente después de guardar una operación. El recuperador es el respaldo si ese intento falla. El intervalo de recuperación no es la vigencia del permiso: `permiso_vigencia_segundos` configura esta última (por defecto, 86400 segundos = 24 horas desde la aprobación, si no hubo ingreso). La demo local conserva sus 10 segundos.
+La publicación se intenta inmediatamente después de guardar una operación. El recuperador es el respaldo si ese intento falla. El intervalo de recuperación no es la vigencia del permiso: `permiso_vigencia_segundos` configura esta última (por defecto, 86400 segundos = 24 horas desde la aprobación, si no hubo ingreso). En la demo local no hay vencimientos: los ejecuta esta Lambda en AWS.
 
 ## Quién recibe cada aviso
 
@@ -21,7 +21,7 @@ La publicación se intenta inmediatamente después de guardar una operación. El
 | Aprobación, rechazo o vencimiento | Usuario que creó la solicitud, identificado por su `sub` de Cognito. |
 | Fallos técnicos | Operador que confirme la suscripción de `alarm_email`. |
 
-El filtro es `destinatario_id`: `usuario:<sub>` para avisos personales y `responsable-sede-N` para avisos de sede. El correo es solamente el destino de entrega de la suscripción; ya no identifica al dueño del aviso. El backend toma el `sub` del token verificado, nunca de datos enviados por el navegador.
+El filtro es `destinatario_id`: `usuario:<sub>` para avisos personales y `responsable-sede-N` para avisos de sede. El correo es solamente el destino de entrega de la suscripción; no identifica al dueño del aviso. El backend toma el `sub` del token verificado, nunca de datos enviados por el navegador.
 
 El correo contiene el número de solicitud, sede, tipo de suceso, fecha y enlace. Los motivos de rechazo, documentos, DNI y demás detalles se consultan después de ingresar a la aplicación. Las colas estándar no garantizan orden: el texto invita a consultar el estado actual, y conserva la fecha del evento.
 
@@ -34,19 +34,18 @@ El correo contiene el número de solicitud, sede, tipo de suceso, fecha y enlace
 - El usuario debe confirmar el mensaje de **Amazon SNS**. Verificar el correo en Cognito es un paso diferente.
 - Los filtros pueden tardar hasta **15 minutos** en propagarse. Activar y confirmar antes de probar solicitudes.
 
-`gestionar-usuarios` es el único administrador de las suscripciones de negocio. Terraform crea los tópicos y colas, pero deja de administrar las direcciones individuales. El bloque `removed` conserva las suscripciones existentes sin eliminarlas. La Lambda actualiza su filtro en el mismo ARN cuando están confirmadas, y retira una dirección anterior si la encuentra vinculada al mismo `sub`.
+`gestionar-usuarios` es el único administrador de las suscripciones de negocio. Terraform crea los tópicos y colas, pero no administra las direcciones individuales. La Lambda actualiza su filtro en el mismo ARN cuando están confirmadas, y retira una dirección anterior si la encuentra vinculada al mismo `sub`.
 
 Si se cambia el grupo o la sede directamente en la consola, ejecutar también `scripts/notificaciones.py`. Cambiar o deshabilitar una cuenta en Cognito no modifica por sí solo una suscripción SNS. Para una baja, el operador debe eliminar su suscripción. El script de roles hace la sincronización automáticamente. El filtrado SNS no reemplaza los permisos del backend ni es instantáneo.
 
 ## Qué se registra y qué significa
 
-- `solicitud_destinatario`: vincula solicitudes nuevas con el `sub` de su creador. Es una tabla adicional; no modifica columnas históricas.
+- `solicitud_destinatario`: vincula cada solicitud con el `sub` de su creador, en la misma transacción que la crea.
 - `evento_pendiente`: una fila por cambio, con UUID estable, contenido, intentos y próxima fecha de reintento. Se guarda en la misma transacción que la solicitud y la auditoría.
 - `publicado` y `sns_message_id`: SNS de eventos aceptó el mensaje.
 - `mail_publicado` y `mail_message_id`: SNS de correos aceptó el aviso. **No prueban entrega a la bandeja, lectura ni ausencia de spam.**
-- La columna antigua `solicitud.notificado` se conserva para evitar una migración destructiva, pero el nuevo circuito no la utiliza.
 
-El recuperador aplica esperas progresivas (desde 60 segundos hasta una hora), procesa hasta 100 eventos por invocación y detiene el trabajo antes de agotar el tiempo disponible. Un evento sin `sub` vinculado permanece pendiente y dispara la alarma de atraso; nunca se reemplaza su destinatario por el correo ni por un envío general.
+El recuperador aplica esperas progresivas (desde 60 segundos hasta una hora), procesa hasta 100 eventos por invocación y detiene el trabajo antes de agotar el tiempo disponible. Un evento cuya solicitud no tiene dueño registrado permanece pendiente y dispara la alarma de atraso; nunca se reemplaza su destinatario por el correo ni por un envío general.
 
 El consumidor comprueba el evento contra la copia registrada en RDS y bloquea esa fila durante la publicación. Si el mismo evento llega de nuevo y ya tiene `mail_publicado`, lo omite. No publica si el tópico tiene una suscripción email confirmada sin filtro seguro; esa configuración requiere reparación del operador.
 
@@ -65,22 +64,18 @@ El consumidor comprueba el evento contra la copia registrada en RDS y bloquea es
 
 Las DLQ tienen retención finita (14 días por defecto); no son un archivo permanente. El operador debe revisar las alarmas a tiempo. Reparado el problema, la DLQ de procesamiento puede redirigirse a su cola original desde SQS. Revisar cuerpo y destinatario antes de recuperar DLQ de entrega: el mensaje SNS de correo es texto, no el JSON del evento interno, y no debe enviarse directamente al consumidor de eventos.
 
-Alarmas agregadas: evento pendiente por más de 15 minutos, falta de métricas del recuperador, fallos parciales de correo y mensajes en las DLQ de entrega. Las alarmas de errores Lambda y DLQ de procesamiento ya existían. Configurar `alarm_email` y confirmar esa suscripción; de lo contrario las alarmas existen pero no llegan a una persona por correo.
+Alarmas: evento pendiente durante más de dos ejecuciones del recuperador (mínimo 15 minutos), falta de métricas del recuperador, fallos parciales de correo, mensajes en las DLQ de entrega y de procesamiento, y errores de las Lambdas asincrónicas. Configurar `alarm_email` y confirmar esa suscripción; de lo contrario las alarmas existen pero no llegan a una persona por correo.
 
-## Despliegue y migración de una versión anterior
+## Despliegue
 
-No se despliega automáticamente desde estos cambios locales. Requiere Terraform 1.10 del proyecto, AWS CLI y credenciales habilitadas del Lab.
+Requiere Terraform 1.10 del proyecto, AWS CLI y credenciales habilitadas del Lab.
 
-1. En una ventana sin nuevas operaciones, comprobar que las colas de la versión anterior estén vacías o guardar y revisar sus mensajes. Los eventos antiguos sin UUID no se aceptan como nuevos: irán a la DLQ para revisión, evitando deduplicaciones o destinatarios inventados.
-2. Respaldar RDS antes de actualizar. Construir/publicar la nueva imagen de backend con un tag nuevo. Su Dockerfile incluye el código compartido `notifications.py`.
-3. Dejar `notificaciones_suscriptores = {}` en los valores privados de Terraform. El bloque `removed { destroy = false }` retira la gestión de Terraform sin cancelar suscripciones confirmadas. No borrar manualmente el tópico.
-4. Ejecutar `make layer` (Python con pip y curl). Descarga dependencias **Linux x86_64/Python 3.12**, el certificado público oficial de RDS, y empaqueta el código común. La Layer permite conexiones TLS con verificación del certificado de RDS. Terraform detecta fuentes desactualizadas y pide reconstruirla.
-5. Ejecutar el workflow **desplegar-aplicacion** (o `make deploy`). El pipeline prepara las tablas con una tarea puntual de ECS antes de habilitar la API y los workers. Ver [despliegue TP3](despliegue-tp3.md).
-6. Sincronizar cada suscripción existente desde la página o el script. Las antiguas que todavía filtran por `destinatario` no reciben los nuevos mensajes hasta migrarse. Confirmar las nuevas y esperar propagación de filtros.
-7. Para solicitudes históricas cuyo titular haya sido revisado: `python3 scripts/notificaciones.py --usuario persona@example.com --solicitudes 12 13`. El script verifica la cuenta en Cognito; la Lambda comprueba correo histórico y evita reasignar una solicitud ya vinculada a otra cuenta. Si el correo cambió, requiere revisión manual, no una asociación por conjetura. La operación no reconstruye ni reenvía automáticamente avisos anteriores: los viejos `notificado=false` deben revisarse, porque ese booleano no guarda el historial de eventos.
-8. Confirmar `alarm_email`. Probar solicitud nueva, aprobación/rechazo, vencimiento y una recuperación controlada de la DLQ con cuentas y sedes de prueba.
+1. Ejecutar `make layer` (Python con pip y curl). Descarga dependencias **Linux x86_64/Python 3.12**, el certificado público oficial de RDS, y empaqueta el código común. La Layer permite conexiones TLS con verificación del certificado de RDS. Terraform detecta fuentes desactualizadas y pide reconstruirla.
+2. Ejecutar el workflow **desplegar-aplicacion** (o `make deploy`). El pipeline prepara las tablas con una tarea puntual de ECS antes de habilitar la API y los workers. Ver [despliegue TP3](despliegue-tp3.md).
+3. Cada usuario activa y confirma su suscripción; esperar la propagación de filtros.
+4. Confirmar `alarm_email`. Probar solicitud nueva, aprobación/rechazo, vencimiento y una recuperación controlada de la DLQ con cuentas y sedes de prueba. Para probar el vencimiento sin esperar 24 horas, bajar `permiso_vigencia_segundos` en `terraform.tfvars`.
 
-**Cambio de infraestructura:** `notificar-mail` pasa a las subredes privadas para consultar RDS y controlar duplicados. Reutiliza los security groups y endpoints SNS/Secrets Manager existentes; no agrega NAT, otra base ni DynamoDB. Hay una Layer compartida y tres DLQ de entrega adicionales (dos para el reparto de eventos y una para correos). Se mantienen las siete Lambdas y el workaround de Cognito.
+**Infraestructura involucrada:** `notificar-mail` corre en las subredes privadas para consultar RDS y controlar duplicados, con los security groups y endpoints SNS/Secrets Manager del proyecto; no hay NAT, otra base ni DynamoDB. Hay una Layer compartida y tres DLQ de entrega (dos para el reparto de eventos y una para correos).
 
 Permisos por verificar en el Lab: SNS Publish/Subscribe/ListSubscriptionsByTopic/GetSubscriptionAttributes/SetSubscriptionAttributes/Unsubscribe sobre los recursos del proyecto; Cognito AdminGetUser/AdminListGroupsForUser/AdminAddUserToGroup; Lambda InvokeFunction para el operador/API; lectura del secreto y KMS; conectividad Lambda-VPC y acceso SQS del consumidor. Se sigue usando LabRole por la restricción del laboratorio. En producción, separar roles de ejecución con mínimo privilegio y usuarios SQL con permisos limitados por función.
 
@@ -101,5 +96,3 @@ Permisos por verificar en el Lab: SNS Publish/Subscribe/ListSubscriptionsByTopic
 - [AWS: DLQ de SNS](https://docs.aws.amazon.com/sns/latest/dg/sns-dead-letter-queues.html).
 - [AWS: dependencias Linux en Layers](https://docs.aws.amazon.com/lambda/latest/dg/python-layers.html).
 - [AWS: TLS y certificados de RDS](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html).
-
-El Word original no está disponible en la ruta suministrada. Esta actualización atiende los problemas comprobados en el código y las recomendaciones AWS citadas; no certifica una nueva comparación íntegra contra ese documento.
