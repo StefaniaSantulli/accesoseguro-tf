@@ -60,7 +60,7 @@ async function buscar() {
       cont.innerHTML = `
         <div class="result-box result-fail">
           <h3>❌ Acceso no autorizado</h3>
-          <p>No hay ninguna solicitud aprobada para "${busqueda}".</p>
+          <p>No hay ninguna solicitud aprobada para "${escapeHtml(busqueda)}".</p>
         </div>`;
       return;
     }
@@ -74,17 +74,17 @@ async function buscar() {
     cont.innerHTML = `
       <div class="result-box result-ok">
         <h3>✅ Acceso autorizado</h3>
-        <p><b>Nombre:</b> ${r.nombre_solicitante}</p>
-        <p><b>Sede:</b> ${r.sede ? r.sede.nombre : "-"}</p>
-        <p><b>Empresa:</b> ${r.empresa || "-"}</p>
-        <p><b>Motivo:</b> ${r.motivo || "-"}</p>
-        ${r.hora_ingreso ? `<p><b>Ingreso registrado:</b> ${r.hora_ingreso}</p>` : ""}
-        ${r.hora_egreso ? `<p><b>Egreso registrado:</b> ${r.hora_egreso}</p>` : ""}
+        <p><b>Nombre:</b> ${escapeHtml(r.nombre_solicitante)}</p>
+        <p><b>Sede:</b> ${escapeHtml(r.sede ? r.sede.nombre : "-")}</p>
+        <p><b>Empresa:</b> ${escapeHtml(r.empresa || "-")}</p>
+        <p><b>Motivo:</b> ${escapeHtml(r.motivo || "-")}</p>
+        ${r.hora_ingreso ? `<p><b>Ingreso registrado:</b> ${escapeHtml(r.hora_ingreso)}</p>` : ""}
+        ${r.hora_egreso ? `<p><b>Egreso registrado:</b> ${escapeHtml(r.hora_egreso)}</p>` : ""}
         ${acciones}
       </div>
     `;
   } catch (err) {
-    cont.innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+    cont.innerHTML = `<div class="empty-state">Error: ${escapeHtml(err.message)}</div>`;
   }
 }
 

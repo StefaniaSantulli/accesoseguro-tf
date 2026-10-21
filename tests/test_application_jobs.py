@@ -175,8 +175,9 @@ class ApiJobsTests(unittest.TestCase):
             response = self.client.get('/api/reporte/exportar?desde=2026-10-20', headers=self.headers('responsables_sede'))
             self.assertEqual(response.status_code, 200)
             self.assertEqual(str(calls[0]['sede_id']), '1')
-            self.assertEqual(self.client.get('/api/reporte/exportar?sede_id=2', headers=self.headers('responsables_sede')).status_code, 403)
-            self.assertEqual(len(calls), 1)
+            # Un sede_id del navegador se ignora: la Lambda recibe siempre la sede del perfil.
+            self.assertEqual(self.client.get('/api/reporte/exportar?sede_id=2', headers=self.headers('responsables_sede')).status_code, 200)
+            self.assertEqual([str(call['sede_id']) for call in calls], ['1', '1'])
             def fail(**kwargs):
                 return {'FunctionError': 'Unhandled'} if kwargs['FunctionName'] == 'report' else original(**kwargs)
             api.lambda_client.invoke.side_effect = fail

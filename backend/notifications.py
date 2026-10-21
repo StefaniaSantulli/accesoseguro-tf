@@ -75,7 +75,7 @@ def publish_one(conn, sns, topic_arn, *, event_id=None, now=None):
             sub = conn.execute(select(owners.c.usuario_sub).where(
                 owners.c.solicitud_id == row["solicitud_id"])).scalar_one_or_none()
             if not sub:
-                raise ValueError("Falta vincular la solicitud histórica a un usuario")
+                raise ValueError("La solicitud no tiene un dueño registrado")
             recipient = f"usuario:{sub}"
         event["destinatario_id"] = recipient
         result = sns.publish(TopicArn=topic_arn, Message=json.dumps(event))
@@ -99,7 +99,7 @@ def publish_one(conn, sns, topic_arn, *, event_id=None, now=None):
 def subscription_matches(sns, topic_arn, recipient):
     """Solo suscripciones email confirmadas con nuestro filtro exacto.
 
-    No se considera correcto un tópico abierto a todos o un filtro legado por mail.
+    Una suscripción sin filtro o con otro filtro recibiría avisos ajenos: se rechaza.
     """
     found = False
     for page in sns.get_paginator("list_subscriptions_by_topic").paginate(TopicArn=topic_arn):
@@ -112,9 +112,6 @@ def subscription_matches(sns, topic_arn, recipient):
                 continue
             policy = json.loads(attrs.get("FilterPolicy", "{}"))
             scope = attrs.get("FilterPolicyScope", "MessageAttributes")
-            if scope == "MessageAttributes" and "destinatario" in policy:
-                # El filtro legado exige un atributo que ya no publicamos: no recibe.
-                continue
             if (scope != "MessageAttributes" or set(policy) != {"destinatario_id"}
                     or not isinstance(policy["destinatario_id"], list)
                     or not policy["destinatario_id"]

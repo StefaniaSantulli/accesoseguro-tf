@@ -45,28 +45,3 @@ def expire(conn, seconds, limit=100, now=None):
         notifications.enqueue(conn, solicitud_id=row["id"], tipo="permiso_vencido",
                               sede_id=row["sede_id"], sede=site, estado="vencida", now=now)
     return len(rows)
-
-
-def link_legacy(conn, sub, email, ids):
-    """Migración explícita del operador, sin inferir identidad de filas históricas."""
-    if not sub or not email or not ids or len(ids) > 100:
-        raise ValueError("Indicar usuario verificado y entre 1 y 100 solicitudes")
-    requests = Table("solicitud", MetaData(), autoload_with=conn)
-    linked = 0
-    for request_id in sorted(set(int(i) for i in ids)):
-        row = conn.execute(select(requests).where(requests.c.id == request_id)
-                           .with_for_update()).mappings().one()
-        if (row["email_solicitante"] or "").lower() != email.lower():
-            raise ValueError("El correo histórico no coincide; requiere revisión manual")
-        owner = conn.execute(select(notifications.owners.c.usuario_sub).where(
-            notifications.owners.c.solicitud_id == request_id)).scalar_one_or_none()
-        if owner and owner != sub:
-            raise ValueError("La solicitud ya está vinculada a otra cuenta")
-        if owner:
-            continue
-        conn.execute(notifications.owners.insert().values(solicitud_id=request_id, usuario_sub=sub))
-        conn.execute(update(notifications.outbox).where(
-            notifications.outbox.c.solicitud_id == request_id, notifications.outbox.c.publicado.is_(None),
-        ).values(proximo_intento=datetime.utcnow()))
-        linked += 1
-    return linked

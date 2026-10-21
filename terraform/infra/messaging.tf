@@ -59,10 +59,10 @@ resource "aws_sns_topic_subscription" "colas" {
   protocol             = "sqs"
   endpoint             = module.sqs[each.key].queue_arn
   raw_message_delivery = true
-  redrive_policy       = jsonencode({ deadLetterTargetArn = aws_sqs_queue.entrega_eventos_dlq[each.key].arn })
+  redrive_policy       = jsonencode({ deadLetterTargetArn = aws_sqs_queue.entrega_dlq[each.key].arn })
 
   # Sin la policy de la cola, SNS no puede entregar y los mensajes se pierden.
-  depends_on = [aws_sqs_queue_policy.this, aws_sqs_queue_policy.entrega_eventos_dlq]
+  depends_on = [aws_sqs_queue_policy.this, aws_sqs_queue_policy.entrega_dlq]
 }
 
 # -----------------------------------------------------------------------------
@@ -77,56 +77,28 @@ resource "aws_sns_topic" "notificaciones_mail" {
   kms_master_key_id = aws_kms_key.main.arn
 }
 
-# Terraform deja de administrar las suscripciones existentes, sin borrarlas.
-# La Lambda migra sus filtros al ID verificado. Evita dos administradores
-# que se pisen entre sí (Terraform y cambios de rol en tiempo de ejecución).
-removed {
-  from = aws_sns_topic_subscription.notificaciones_mail
-  lifecycle {
-    destroy = false
-  }
-}
-
-# Si SNS no puede entregar a SQS, la DLQ de procesamiento no alcanza:
-# hace falta una DLQ de entrega en la suscripción SNS.
-resource "aws_sqs_queue" "entrega_eventos_dlq" {
-  for_each                  = local.sns_subscribed_queues
+# Si SNS no puede entregar a una cola o a un mail, la DLQ de procesamiento no
+# alcanza: cada suscripción tiene además una DLQ de entrega. Una por tópico y
+# destino (auditoría, notificaciones y mail), ver local.sns_delivery_dlqs.
+resource "aws_sqs_queue" "entrega_dlq" {
+  for_each                  = local.sns_delivery_dlqs
   name                      = "${local.name_prefix}-entrega-${each.key}-dlq"
   message_retention_seconds = 1209600
   kms_master_key_id         = aws_kms_key.main.arn
 }
 
-resource "aws_sqs_queue_policy" "entrega_eventos_dlq" {
-  for_each  = local.sns_subscribed_queues
-  queue_url = aws_sqs_queue.entrega_eventos_dlq[each.key].url
+# Solo el tópico correspondiente puede escribir en cada DLQ de entrega.
+resource "aws_sqs_queue_policy" "entrega_dlq" {
+  for_each  = local.sns_delivery_dlqs
+  queue_url = aws_sqs_queue.entrega_dlq[each.key].url
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
       Principal = { Service = "sns.amazonaws.com" }
       Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.entrega_eventos_dlq[each.key].arn
-      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.eventos_solicitud.arn } }
-    }]
-  })
-}
-
-resource "aws_sqs_queue" "entrega_mail_dlq" {
-  name                      = "${local.name_prefix}-entrega-mail-dlq"
-  message_retention_seconds = 1209600
-  kms_master_key_id         = aws_kms_key.main.arn
-}
-
-resource "aws_sqs_queue_policy" "entrega_mail_dlq" {
-  queue_url = aws_sqs_queue.entrega_mail_dlq.url
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "sns.amazonaws.com" }
-      Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.entrega_mail_dlq.arn
-      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.notificaciones_mail.arn } }
+      Resource  = aws_sqs_queue.entrega_dlq[each.key].arn
+      Condition = { ArnEquals = { "aws:SourceArn" = each.value } }
     }]
   })
 }

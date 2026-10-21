@@ -55,7 +55,6 @@ espera. La tabla DynamoDB del método clásico queda como opción (`create_dynam
 ├── backend/                          # API Flask + Dockerfile (imagen de ECS)
 ├── frontend/                         # sitio estático (HTML/CSS/JS) + config.js.tftpl
 ├── scripts/deploy.py                 # ordena infraestructura, imagen, base y verificaciones
-├── scripts/push-image.sh             # herramienta individual de build + push
 ├── Makefile                          # atajos: make bootstrap / init / plan / apply / image
 ├── docs/arquitectura.mmd             # fuente del diagrama actualizado
 └── README.md
@@ -110,7 +109,7 @@ flowchart LR
   U -->|PUT firmado HTTPS| DOCS[S3 documentos]
   DOCS --> QD[SQS documentos y DLQ] --> VAL
   ECS -->|Eventos guardados en outbox| SNS[SNS eventos-solicitud]
-  EB[EventBridge cada minuto configurable] --> VEN --> SNS
+  EB[EventBridge cada 15 minutos configurable] --> VEN --> SNS
   SNS --> QA[SQS auditoría y DLQ] --> AUD[Lambda archivar-auditoria]
   AUD --> ARCH[S3 auditoría]
   REP -->|CSV en reportes/| ARCH
@@ -123,11 +122,11 @@ flowchart LR
 | Capa (PDF) | Servicio | Archivo | Recursos principales |
 |---|---|---|---|
 | Front | S3 sitio estático | `frontend.tf` | `aws_s3_bucket.sitio`, website, policy pública de lectura, `aws_s3_object` |
-| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 roles (transportistas, porteros y responsables_sede; grupo anterior conservado sin permisos), dominio, app client, HTTP API |
+| Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 roles (transportistas, porteros y responsables_sede), dominio, app client, HTTP API |
 | Entrada | Internet Gateway + ALB | `modules/network`, `alb.tf` | IGW, `aws_lb`, target group tipo `ip`, listener 80 |
 | Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
 | Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
-| Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópico, `module.sqs`, suscripciones, recuperación cada minuto (configurable) |
+| Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópico, `module.sqs`, suscripciones, DLQs de entrega, recuperación cada 15 minutos (configurable) |
 | Seguridad | VPC, SG, NACL, Secrets Manager, KMS, LabRole, CloudTrail | `network.tf`, `security.tf` | SG encadenados, NACL datos, clave KMS, secretos |
 | Operación | CloudWatch, Auto Scaling | `monitoring.tf`, `ecs.tf` | alarmas (5xx, tasks sanas, DLQ, errores Lambda, RDS) |
 
@@ -175,10 +174,10 @@ Cada módulo propio sigue la estructura recomendada en clase: `main.tf`, `variab
 | `lookup()`, `split()`, `element()`, `length()`, `lower()` | `frontend.tf` | Elegir el Content-Type según la extensión |
 | `urlencode()`, `join()` | `locals.tf` | Armar la URL de login de la Hosted UI |
 | `keys()`, `sort()` | `ecs.tf` | Pasar el mapa de variables de entorno al formato de ECS |
-| `toset()`, `compact()`, `concat()` | `messaging.tf`, `network.tf`, `modules/s3-bucket` | Lista de mails a verificar sin vacíos; set para `for_each` |
+| `toset()`, `concat()` | `locals.tf`, `network.tf`, `monitoring.tf`, `modules/s3-bucket` | Sets para `for_each` (colas suscriptas, endpoints, alarmas); unir statements de la bucket policy |
 | `tostring()` | `locals.tf` | Las variables de entorno tienen que ser strings |
 | `title()`, `replace()` | `messaging.tf`, `network.tf` | Armar el `Sid` de la policy y el nombre de cada endpoint |
-| `max()` | `ecs.tf` | El máximo del Auto Scaling nunca queda por debajo del mínimo |
+| `max()` | `ecs.tf`, `locals.tf` | El máximo del Auto Scaling nunca queda por debajo del mínimo; umbral mínimo de la alarma de avisos atrasados |
 | `formatdate()`, `timestamp()` | `database.tf` | Nombre del snapshot final en prod |
 | `one()` | `bootstrap/outputs.tf` | Output de un recurso creado con `count` (o `null`) |
 | `contains()`, `regex()` | `variables.tf` | Validaciones de entrada |
@@ -236,7 +235,7 @@ make deploy
 
 Ver [guía de despliegue TP3](docs/despliegue-tp3.md) para las etapas, estados,
 recuperación de fallos y funcionamiento real de documentos/reportes. Los comandos
-individuales `make plan`, `make apply` y `make image` no sustituyen el proceso completo.
+individuales `make plan` y `make apply` no sustituyen el proceso completo.
 
 ### Probar la aplicación
 ```bash
@@ -249,10 +248,9 @@ make outputs    # sitio_url, api_url, login_url...
    make grupo EMAIL=portero@example.com GRUPO=porteros SEDE=1
    make grupo EMAIL=responsable@example.com GRUPO=responsables_sede SEDE=2
    ```
-   El script retira grupos anteriores y asigna un único rol. Luego el usuario vuelve a
-   iniciar sesión. El grupo anterior `administradores` no concede permisos.
-   Ver [Cognito y roles](docs/cognito-y-roles.md) para el workaround de clase,
-   los permisos, la migración de usuarios y las suscripciones de correo por sede.
+   El script reemplaza el rol que tuviera el usuario por uno único. Luego el usuario vuelve a
+   iniciar sesión. Ver [Cognito y roles](docs/cognito-y-roles.md) para el workaround de clase,
+   los permisos y las suscripciones de correo por sede.
 4. Flujo completo: el transportista crea una solicitud con PDF → el PDF sube directo a S3 →
    S3 avisa a `cola-documentos` → Lambda `validar-documento`. La API publica el evento en SNS →
    `cola-auditoria` (Lambda guarda el JSON en el bucket de auditoría) y `cola-notificaciones`
@@ -329,8 +327,8 @@ cd frontend && python3 -m http.server 8000                           # terminal 
 # abrir http://localhost:8000/login.html
 ```
 
-## Notificaciones: operación y migración
+## Notificaciones y vencimientos
 
 Ver [notificaciones.md](docs/notificaciones.md) para el circuito real, la confirmación SNS, el outbox, reintentos y recuperación de fallos. Ejecutar `make layer` antes de `make plan`. Las suscripciones se activan desde el inicio o `scripts/notificaciones.py`; el script de roles actualiza los filtros automáticamente.
 
-`vencer-permisos` ahora consulta PostgreSQL y recupera eventos reales. `notificar-mail` también usa RDS para registrar publicaciones y omitir duplicados ya procesados. La Layer incluye las dependencias Linux. Documentos y reportes también usan esa Layer y consultan RDS. SNS auditoría conserva su implementación previa.
+`vencer-permisos` corre cada `vencer_permisos_intervalo_minutos` (15 por defecto): vence en RDS los permisos aprobados y no usados después de `permiso_vigencia_segundos` y reintenta los avisos pendientes. `notificar-mail` usa RDS para registrar publicaciones y omitir duplicados. Las cuatro Lambdas que acceden a RDS (`usa_rds = true` en `locals.tf`) comparten la Layer con el driver y el código común.

@@ -3,7 +3,7 @@ TF_DIR      := terraform
 BOOTSTRAP   := $(TF_DIR)/bootstrap
 INFRA       := $(TF_DIR)/infra
 
-.PHONY: help bootstrap init validate plan apply image destroy fmt outputs grupo
+.PHONY: help bootstrap init fmt validate layer plan apply deploy grupo outputs destroy test
 
 help:            ## Lista los comandos
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-10s %s\n", $$1, $$2}'
@@ -27,9 +27,6 @@ plan: layer      ## Muestra qué va a cambiar
 apply:           ## Aplica solo infraestructura; para la aplicación completa usar deploy
 	cd $(INFRA) && terraform apply tfplan
 
-image:           ## Construye y sube la imagen de backend/ a ECR (tag de terraform.tfvars)
-	./scripts/push-image.sh
-
 grupo:           ## Asigna rol: make grupo EMAIL=x@y.com GRUPO=porteros SEDE=1
 	python3 scripts/asignar-rol.py --usuario "$(EMAIL)" --grupo "$(GRUPO)" $(if $(SEDE),--sede "$(SEDE)",)
 
@@ -39,14 +36,12 @@ outputs:         ## Muestra URLs y nombres útiles
 destroy:         ## Borra la infra (el bucket del state se conserva)
 	cd $(INFRA) && terraform destroy
 
-.PHONY: layer test
-layer:           ## Empaqueta dependencias Linux y código de notificaciones para Lambda
+layer:           ## Empaqueta dependencias Linux y código compartido de las Lambdas
 	python3 scripts/build-notifications-layer.py
 
 test:            ## Pruebas de Python y frontend (sin AWS)
 	python3 -m unittest discover -s tests -v
 	node tests/test_frontend_auth.cjs
 
-.PHONY: deploy
 deploy:          ## Despliega toda la aplicación desde un commit limpio (requiere AWS y Docker)
 	python3 scripts/deploy.py --apply --image-tag "$$(git rev-parse HEAD)"

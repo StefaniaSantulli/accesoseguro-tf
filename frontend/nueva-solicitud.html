@@ -78,7 +78,7 @@ async function cargarSedes() {
   try {
     const sedes = await apiGet("/api/sedes");
     const select = document.getElementById("select-sede");
-    select.innerHTML = sedes.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join("");
+    select.innerHTML = sedes.map((s) => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join("");
   } catch (err) {
     console.error("No se pudieron cargar las sedes:", err);
   }

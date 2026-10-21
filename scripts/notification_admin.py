@@ -1,4 +1,4 @@
-"""Helpers CLI; no credenciales ni llamadas AWS al importar."""
+"""Helpers compartidos por los scripts del operador; no llaman a AWS al importar."""
 import json
 import subprocess
 import tempfile
@@ -9,6 +9,24 @@ def outputs():
     infra = Path(__file__).resolve().parents[1] / "terraform" / "infra"
     raw = subprocess.check_output(["terraform", f"-chdir={infra}", "output", "-json"], text=True)
     return {key: item["value"] for key, item in json.loads(raw).items()}
+
+
+def aws(region, *args):
+    """Ejecuta la AWS CLI y devuelve la respuesta JSON (vacía si no hay salida)."""
+    result = subprocess.run(
+        ["aws", *args, "--region", region, "--output", "json", "--no-cli-pager"],
+        check=True, capture_output=True, text=True,
+    )
+    return json.loads(result.stdout) if result.stdout.strip() else {}
+
+
+def usuario_verificado(region, pool, usuario):
+    """Usuario de Cognito habilitado y con correo verificado; si no, ValueError."""
+    user = aws(region, "cognito-idp", "admin-get-user", "--user-pool-id", pool, "--username", usuario)
+    attrs = {a["Name"]: a["Value"] for a in user["UserAttributes"]}
+    if not user.get("Enabled") or attrs.get("email_verified") != "true":
+        raise ValueError("La cuenta debe estar habilitada y tener correo verificado")
+    return user, attrs
 
 
 def invoke(region, function, payload):

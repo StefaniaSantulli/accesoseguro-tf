@@ -57,10 +57,10 @@ async function cargar() {
         <tbody>
           ${solicitudes.map((s) => `
             <tr>
-              <td>${s.nombre_solicitante}</td>
-              <td>${s.dni}</td>
-              <td>${s.sede ? s.sede.nombre : "-"}</td>
-              <td><span class="badge-estado badge-${s.estado}">${s.estado}</span></td>
+              <td>${escapeHtml(s.nombre_solicitante)}</td>
+              <td>${escapeHtml(s.dni)}</td>
+              <td>${escapeHtml(s.sede ? s.sede.nombre : "-")}</td>
+              <td><span class="badge-estado badge-${escapeHtml(s.estado)}">${escapeHtml(s.estado)}</span></td>
             </tr>
           `).join("")}
         </tbody>
@@ -68,7 +68,7 @@ async function cargar() {
       </div>
     `;
   } catch (err) {
-    cont.innerHTML = `<div class="empty-state">Error al cargar: ${err.message}</div>`;
+    cont.innerHTML = `<div class="empty-state">Error al cargar: ${escapeHtml(err.message)}</div>`;
   }
 }
 

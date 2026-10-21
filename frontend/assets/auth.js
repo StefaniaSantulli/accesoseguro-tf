@@ -69,7 +69,7 @@ function getRole() {
   if (isCognitoMode() && !leerClaims(getToken())) return null;
   const grupos = getGroups();
   const roles = grupos.filter((g) => GRUPOS_VALIDOS.includes(g));
-  if (grupos.includes("administradores") || roles.length > 1) return ROLES.INVALIDO;
+  if (roles.length > 1) return ROLES.INVALIDO;
   return roles[0] || (isCognitoMode() ? ROLES.SIN_ROL : null);
 }
 function setRole(rol) {
@@ -108,14 +108,23 @@ function requireRole(rolesPermitidos) {
   return rol;
 }
 
+// Única lista de páginas: arma el menú superior (label) y las tarjetas del
+// inicio (titulo y texto), filtradas según el rol del usuario.
 const NAV = [
-  { href: "nueva-solicitud.html", label: "Nueva solicitud", grupos: [ROLES.TRANSPORTISTA] },
-  { href: "mis-solicitudes.html", label: "Mis solicitudes", grupos: [ROLES.TRANSPORTISTA] },
-  { href: "panel-aprobacion.html", label: "Aprobación", grupos: GRUPOS_RESPONSABLE },
-  { href: "solicitudes.html", label: "Solicitudes de mi sede", grupos: [...GRUPOS_RESPONSABLE, ...GRUPOS_PORTERIA] },
-  { href: "verificacion.html", label: "Portería", grupos: GRUPOS_PORTERIA },
-  { href: "reporte.html", label: "Reporte", grupos: GRUPOS_RESPONSABLE },
-  { href: "auditoria.html", label: "Auditoría", grupos: GRUPOS_RESPONSABLE },
+  { href: "nueva-solicitud.html", label: "Nueva solicitud", grupos: [ROLES.TRANSPORTISTA],
+    titulo: "Nueva solicitud de acceso", texto: "Cargá tus datos y adjuntá documentación de respaldo." },
+  { href: "mis-solicitudes.html", label: "Mis solicitudes", grupos: [ROLES.TRANSPORTISTA],
+    titulo: "Mis solicitudes", texto: "Consultá el estado de tus solicitudes cargadas, buscando por tu DNI." },
+  { href: "panel-aprobacion.html", label: "Aprobación", grupos: GRUPOS_RESPONSABLE,
+    titulo: "Panel de aprobación", texto: "Revisá el documento adjunto de cada solicitud y aprobá o rechazá." },
+  { href: "verificacion.html", label: "Portería", grupos: GRUPOS_PORTERIA,
+    titulo: "Verificación en portería", texto: "Buscá por DNI o patente y registrá el ingreso o egreso." },
+  { href: "reporte.html", label: "Reporte", grupos: GRUPOS_RESPONSABLE,
+    titulo: "Reporte histórico", texto: "Exportá un CSV con el historial de tu sede, filtrado por fechas." },
+  { href: "auditoria.html", label: "Auditoría", grupos: GRUPOS_RESPONSABLE,
+    titulo: "Log de auditoría", texto: "Acciones registradas para mi sede." },
+  { href: "solicitudes.html", label: "Solicitudes de mi sede", grupos: [...GRUPOS_RESPONSABLE, ...GRUPOS_PORTERIA],
+    titulo: "Solicitudes de mi sede", texto: "Listado general con el estado actual de cada una." },
 ];
 function linksVisibles() {
   return NAV.filter((l) => hasAnyGroup(l.grupos));

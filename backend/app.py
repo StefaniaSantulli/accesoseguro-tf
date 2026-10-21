@@ -1,25 +1,26 @@
 """API de AccesoSeguro (Flask) — corre en ECS Fargate detrás del ALB.
 
-Cambios respecto a la versión v3 local:
 - Base de datos: RDS PostgreSQL con las variables que inyecta ECS (DB_HOST,
-  DB_PORT, DB_NAME, DB_USER y DB_PASSWORD desde Secrets Manager). Si no hay
-  DB_HOST, usa SQLite local (para probar en la compu).
-- Autenticación: Cognito. Flask valida el token (firma, emisor, cliente y
-  vencimiento) con las llaves públicas que Terraform le pasa en COGNITO_JWKS.
-  Autorización: access token, grupos de Cognito y sede asignada por el operador.
+  DB_PORT, DB_NAME, DB_USER y DB_PASSWORD desde Secrets Manager). Sin DB_HOST
+  usa SQLite local (demo y pruebas).
+- Autenticación: Cognito. Flask valida el access token (firma, emisor, cliente
+  y vencimiento) con las llaves públicas que Terraform le pasa en COGNITO_JWKS.
+  Autorización: un único grupo de Cognito (transportistas, porteros o
+  responsables_sede) y la sede asignada por el operador.
   La demostración sin Cognito requiere LOCAL_DEMO=true y no admite DB_HOST/APP_ENV.
 - Documentos: el navegador sube el PDF directo a S3 con una presigned URL
   (no pasa por la API). La clave va por empresa:
   empresas/{empresa}/solicitudes/{id}/documento-{uuid}.pdf
   Cada PDF nuevo dispara S3 -> SQS -> Lambda validar-documento.
-- Eventos: cada cambio importante se publica en SNS (fan-out a auditoría y
-  notificaciones).
+- Eventos: cada cambio importante se guarda en un outbox dentro de la misma
+  transacción y se publica en SNS (fan-out a auditoría y notificaciones).
+- Vencimientos: los hace la Lambda vencer-permisos (EventBridge), no la API.
 """
 import json
 import os
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
 from urllib.parse import quote_plus
 
@@ -34,12 +35,11 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
-SEGUNDOS_VENCIMIENTO = int(os.environ.get("SEGUNDOS_VENCIMIENTO", "10"))
 PRESIGNED_URL_TTL = int(os.environ.get("PRESIGNED_URL_TTL", "300"))
 MAX_PDF_SIZE_MB = int(os.environ.get("MAX_PDF_SIZE_MB", "10"))
 
-# Bucket de documentos (lo inyecta Terraform como DOCS_BUCKET).
-BUCKET_NAME = os.environ.get("DOCS_BUCKET") or os.environ.get("BUCKET_NAME", "accesoseguro-documentos-local")
+# Bucket de documentos (lo inyecta Terraform).
+DOCS_BUCKET = os.environ.get("DOCS_BUCKET", "accesoseguro-documentos-local")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 # Lambda fuera de la VPC: consulta el perfil y habilita el alta de transportistas.
 ROLES_LAMBDA_NAME = os.environ.get("ROLES_LAMBDA_NAME", "")
@@ -55,10 +55,10 @@ lambda_client = boto3.client("lambda", region_name=REGION)
 app = Flask(__name__)
 
 # El frontend vive en el bucket S3 (otro origen): el navegador exige CORS.
-FRONTEND_ORIGIN = os.environ.get("CORS_ALLOWED_ORIGIN") or os.environ.get("FRONTEND_ORIGIN", "*")
+CORS_ALLOWED_ORIGIN = os.environ.get("CORS_ALLOWED_ORIGIN", "*")
 CORS(
     app,
-    resources={r"/api/*": {"origins": FRONTEND_ORIGIN}},
+    resources={r"/api/*": {"origins": CORS_ALLOWED_ORIGIN}},
     allow_headers=["Authorization", "Content-Type", "X-Demo-Role", "X-Demo-Sede"],
 )
 
@@ -81,14 +81,13 @@ def _database_url():
 
 
 app.config["SQLALCHEMY_DATABASE_URI"] = _database_url()
-app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {}
-if app.config["SQLALCHEMY_DATABASE_URI"].startswith("postgresql"):
-    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-        "pool_pre_ping": True, "pool_size": 5, "max_overflow": 5, "pool_timeout": 5,
-        "connect_args": {"connect_timeout": 5},
-    }
+# Pool de conexiones solo para PostgreSQL; SQLite (demo y pruebas) no lo admite.
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True, "pool_size": 5, "max_overflow": 5, "pool_timeout": 5,
+    "connect_args": {"connect_timeout": 5},
+} if app.config["SQLALCHEMY_DATABASE_URI"].startswith("postgresql") else {}
 db = SQLAlchemy(app)
-# Tablas aditivas: no se borran ni reinterpretan solicitudes históricas.
+# Tablas compartidas con las Lambdas (outbox, dueños y validación de documentos).
 for table in [*notifications.metadata.tables.values(), *application_jobs.metadata.tables.values()]:
     table.to_metadata(db.metadata)
 
@@ -134,8 +133,6 @@ class Solicitud(db.Model):
     hora_egreso = db.Column(db.DateTime)
     documento_s3_key = db.Column(db.String(300))
     motivo_decision = db.Column(db.String(300))
-    # Legado: el estado de publicación ahora está en evento_pendiente, por evento.
-    notificado = db.Column(db.Boolean, default=False)
 
     sede = db.relationship("Sede")
 
@@ -165,7 +162,7 @@ class Solicitud(db.Model):
 
 
 class AuditoriaSede(db.Model):
-    """Asocia los nuevos logs a una sede sin alterar la tabla histórica existente."""
+    """Sede de cada registro de auditoría: cada responsable consulta solo la suya."""
     log_id = db.Column(db.Integer, db.ForeignKey("log_auditoria.id"), primary_key=True)
     sede_id = db.Column(db.Integer, db.ForeignKey("sede.id"), nullable=False, index=True)
 
@@ -263,7 +260,7 @@ def requiere_login(grupos=None):
                 g.usuario = {**perfil["usuario"], "username": claims["username"], "sub": claims["sub"],
                              "grupos": claims.get("cognito:groups", [])}
             roles = set(g.usuario["grupos"]) & GRUPOS_APLICACION
-            if len(roles) > 1 or "administradores" in g.usuario["grupos"]:
+            if len(roles) > 1:
                 return jsonify({"error": "El operador debe asignarte un único rol de la aplicación"}), 403
             if grupos and not set(g.usuario["grupos"]) & set(grupos):
                 return jsonify({"error": "No tenés permiso para esta acción"}), 403
@@ -312,7 +309,7 @@ def generar_url_documento(key, documento, expiracion=PRESIGNED_URL_TTL):
     if not documento or documento["estado"] != "valido" or not documento["version_id"]:
         return None
     return s3.generate_presigned_url(
-        "get_object", Params={"Bucket": BUCKET_NAME, "Key": key, "VersionId": documento["version_id"]},
+        "get_object", Params={"Bucket": DOCS_BUCKET, "Key": key, "VersionId": documento["version_id"]},
         ExpiresIn=expiracion,
     )
 
@@ -455,7 +452,7 @@ def url_subida_documento(id):
     solicitud = Solicitud.query.filter_by(id=id).with_for_update().first_or_404()
     owner = db.session.execute(db.select(notifications.owners.c.usuario_sub).where(
         notifications.owners.c.solicitud_id == id)).scalar_one_or_none()
-    if (owner != g.usuario["sub"] if owner else solicitud.email_solicitante != g.usuario.get("email")):
+    if owner != g.usuario["sub"]:
         return jsonify({"error": "La solicitud no es tuya"}), 403
 
     if solicitud.estado != "pendiente":
@@ -464,7 +461,7 @@ def url_subida_documento(id):
     key = f"empresas/{_slug(empresa)}/solicitudes/{solicitud.id}/documento-{uuid.uuid4().hex[:8]}.pdf"
     url = s3.generate_presigned_url(
         "put_object",
-        Params={"Bucket": BUCKET_NAME, "Key": key, "ContentType": "application/pdf"},
+        Params={"Bucket": DOCS_BUCKET, "Key": key, "ContentType": "application/pdf"},
         ExpiresIn=PRESIGNED_URL_TTL,
     )
     solicitud.documento_s3_key = key
@@ -481,15 +478,12 @@ def url_subida_documento(id):
 @requiere_login(GRUPOS_TRANSPORTISTA)
 def mis_solicitudes():
     dni = (request.args.get("dni") or "").strip()
-    # Las solicitudes nuevas usan sub. Las antiguas conservan su acceso anterior
-    # hasta que el operador confirme la vinculación (ver guía de migración).
+    # El dueño se identifica por el sub de Cognito, guardado al crear la solicitud.
     owner = notifications.owners
-    query = Solicitud.query.outerjoin(owner, owner.c.solicitud_id == Solicitud.id).filter(
-        (owner.c.usuario_sub == g.usuario["sub"]) |
-        (owner.c.usuario_sub.is_(None) & (Solicitud.email_solicitante == g.usuario["email"]))
-    )
+    query = Solicitud.query.join(owner, owner.c.solicitud_id == Solicitud.id).filter(
+        owner.c.usuario_sub == g.usuario["sub"])
     if dni:
-        query = query.filter_by(dni=dni)
+        query = query.filter(Solicitud.dni == dni)
     return jsonify([s.to_dict() for s in query.order_by(Solicitud.fecha_creacion.desc()).all()])
 
 
@@ -555,9 +549,7 @@ def ver_auditoria():
 @app.route("/api/reporte/exportar")
 @requiere_login(GRUPOS_RESPONSABLE)
 def exportar_reporte():
-    sede_id = g.usuario["sede_id"]
-    if request.args.get("sede_id") and request.args["sede_id"] != str(sede_id):
-        return jsonify({"error": "No tenés permiso para esa sede"}), 403
+    sede_id = g.usuario["sede_id"]  # siempre la sede asignada al responsable
     desde, hasta = request.args.get("desde"), request.args.get("hasta")
     try:
         application_jobs.report_dates(desde, hasta)
@@ -633,32 +625,6 @@ def registrar_egreso(id):
     auditar("Registro de egreso", f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante})", solicitud.sede_id)
     db.session.commit()
     return jsonify(solicitud.to_dict())
-
-
-# -----------------------------------------------------------------------------
-# Expiración (demo manual; en AWS la hace la Lambda vencer-permisos)
-# -----------------------------------------------------------------------------
-@app.route("/api/expirar-vencidas")
-@requiere_login(GRUPOS_RESPONSABLE)
-def expirar_vencidas():
-    limite = datetime.utcnow() - timedelta(seconds=SEGUNDOS_VENCIMIENTO)
-    vencidas = solicitudes_de_sede().filter(
-        Solicitud.estado == "aprobada",
-        Solicitud.hora_ingreso.is_(None),
-        Solicitud.fecha_aprobacion.isnot(None),
-        Solicitud.fecha_aprobacion < limite,
-    ).with_for_update(skip_locked=True).all()
-
-    eventos = []
-    for s in vencidas:
-        s.estado = "vencida"
-        auditar("Expiración automática", f"Solicitud #{s.id} ({s.nombre_solicitante}) - vencida", s.sede_id)
-        eventos.append(guardar_evento(s, "permiso_vencido"))
-    db.session.commit()
-    for event_id in eventos:
-        publicar_evento(event_id)
-
-    return jsonify({"vencidas": len(vencidas), "ids": [s.id for s in vencidas]})
 
 
 # AWS inicia el esquema con una tarea puntual antes de habilitar el servicio.

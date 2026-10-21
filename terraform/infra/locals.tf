@@ -57,8 +57,8 @@ locals {
   # Buckets (módulo propio s3-bucket)
   # ---------------------------------------------------------------------------
   private_buckets = {
-    documentos = { versioning = true, description = "PDFs de los transportistas" }
-    auditoria  = { versioning = true, description = "Copia JSON de eventos y reportes CSV" }
+    documentos = { versioning = true } # PDFs de los transportistas
+    auditoria  = { versioning = true } # Copia JSON de eventos y reportes CSV
   }
 
   bucket_names = merge(
@@ -154,9 +154,29 @@ locals {
     for name, q in local.sqs_queues : name if q.source_service == "sns.amazonaws.com"
   ])
 
+  # DLQs de entrega SNS: reciben lo que SNS no pudo entregar a una cola o a un
+  # mail. Clave => tópico que puede escribir en ella.
+  sns_delivery_dlqs = merge(
+    { for name in local.sns_subscribed_queues : name => aws_sns_topic.eventos_solicitud.arn },
+    { mail = aws_sns_topic.notificaciones_mail.arn }
+  )
+
   # ---------------------------------------------------------------------------
   # Lambdas (módulo propio lambda-function, una llamada con for_each)
   # ---------------------------------------------------------------------------
+  # EventBridge exige singular para 1 minuto: rate(1 minute) / rate(15 minutes).
+  vencer_permisos_schedule = (var.vencer_permisos_intervalo_minutos == 1
+    ? "rate(1 minute)"
+    : "rate(${var.vencer_permisos_intervalo_minutos} minutes)"
+  )
+
+  # Un aviso pendiente es "atrasado" si sobrevivió a dos ejecuciones del
+  # recuperador (mínimo 15 minutos).
+  outbox_edad_maxima_segundos = max(900, 2 * var.vencer_permisos_intervalo_minutos * 60)
+
+  # usa_rds = true: la Lambda corre en las subredes de app (para llegar a RDS),
+  # recibe el ARN del secreto de la base y carga la Layer con el driver y el
+  # código compartido. Ver lambdas.tf.
   db_secret_env = {
     DB_SECRET_ARN = aws_secretsmanager_secret.db.arn
   }
@@ -166,7 +186,7 @@ locals {
       description = "Cambia el code de Cognito por tokens y redirige al sitio"
       timeout     = 10
       memory_size = 128
-      in_vpc      = false
+      usa_rds     = false
       environment = {
         COGNITO_DOMAIN           = local.cognito_domain_url
         COGNITO_CLIENT_ID        = aws_cognito_user_pool_client.web.id
@@ -179,38 +199,38 @@ locals {
       description = "Consulta RDS, arma el CSV, lo guarda en S3 y devuelve una presigned URL"
       timeout     = 30
       memory_size = 512
-      in_vpc      = true
-      environment = merge(local.db_secret_env, {
+      usa_rds     = true
+      environment = {
         AUDIT_BUCKET      = local.bucket_names["auditoria"]
         REPORT_PREFIX     = "reportes/"
         PRESIGNED_URL_TTL = tostring(var.presigned_url_ttl_seconds)
-      })
+      }
     }
     validar-documento = {
       description = "Revisa tipo y tamaño del PDF y actualiza su estado en RDS"
       timeout     = 30
       memory_size = 256
-      in_vpc      = true
-      environment = merge(local.db_secret_env, {
+      usa_rds     = true
+      environment = {
         DOCS_BUCKET = local.bucket_names["documentos"]
         MAX_SIZE_MB = tostring(var.max_pdf_size_mb)
-      })
+      }
     }
     vencer-permisos = {
       description = "Marca permisos vencidos, graba auditoría y publica el evento"
       timeout     = 60
       memory_size = 256
-      in_vpc      = true
-      environment = merge(local.db_secret_env, {
+      usa_rds     = true
+      environment = {
         SNS_TOPIC_ARN        = aws_sns_topic.eventos_solicitud.arn
         SEGUNDOS_VENCIMIENTO = tostring(var.permiso_vigencia_segundos)
-      })
+      }
     }
     archivar-auditoria = {
       description = "Guarda la copia JSON de cada evento en el bucket de auditoría"
       timeout     = 30
       memory_size = 128
-      in_vpc      = false
+      usa_rds     = false
       environment = {
         AUDIT_BUCKET = local.bucket_names["auditoria"]
         EVENT_PREFIX = "eventos/"
@@ -220,22 +240,22 @@ locals {
       description = "Consulta el perfil de Cognito y habilita altas como transportista"
       timeout     = 30
       memory_size = 128
-      in_vpc      = false
+      usa_rds     = false
       environment = {
         USER_POOL_ID             = aws_cognito_user_pool.main.id
         NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
-        NOTIFICACIONES_DLQ_ARN   = aws_sqs_queue.entrega_mail_dlq.arn
+        NOTIFICACIONES_DLQ_ARN   = aws_sqs_queue.entrega_dlq["mail"].arn
       }
     }
     notificar-mail = {
       description = "Arma el aviso según el evento y lo publica en el tópico SNS de mails"
       timeout     = 30
       memory_size = 256
-      in_vpc      = true
-      environment = merge(local.db_secret_env, {
+      usa_rds     = true
+      environment = {
         NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
         SITE_URL                 = local.site_url
-      })
+      }
     }
   }
 
@@ -243,13 +263,10 @@ locals {
   # Cognito
   # ---------------------------------------------------------------------------
   # Tres roles de aplicación. No se asignan roles IAM a los usuarios.
-  # El grupo anterior se conserva para migrar usuarios sin borrar membresías;
-  # Flask no le otorga permisos. El operador debe reasignar cada usuario.
   cognito_groups = {
     transportistas    = { precedence = 20, description = "Cargan solicitudes de acceso y suben su documentacion" }
     porteros          = { precedence = 10, description = "Verifican y registran ingresos y egresos en su sede" }
     responsables_sede = { precedence = 5, description = "Aprueban solicitudes y consultan reportes y auditoria de su sede" }
-    administradores   = { precedence = 99, description = "LEGADO sin permisos en la aplicacion; migrar a uno de los tres grupos" }
   }
 
   cognito_domain_prefix = format("%s-%s", local.name_prefix, local.account_id)
@@ -289,7 +306,6 @@ locals {
     PRESIGNED_URL_TTL    = tostring(var.presigned_url_ttl_seconds)
     CORS_ALLOWED_ORIGIN  = local.site_url
     MAX_PDF_SIZE_MB      = tostring(var.max_pdf_size_mb)
-    SEGUNDOS_VENCIMIENTO = tostring(var.permiso_vigencia_segundos)
   }
 
   # ---------------------------------------------------------------------------

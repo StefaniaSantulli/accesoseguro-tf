@@ -3,6 +3,7 @@
 *.tfstate
 *.tfstate.*
 *.tfplan
+tfplan
 crash.log
 crash.*.log
 override.tf
@@ -30,5 +31,3 @@ __pycache__/
 # Base SQLite local del backend
 backend/instance/
 *.db
-tfplan
-tfplan

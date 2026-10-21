@@ -52,7 +52,7 @@ if (rolActual === ROLES.INVALIDO) {
   document.querySelector("button[onclick*=elegir]").disabled = true;
   const aviso = document.getElementById("mensaje");
   aviso.style.display = "block";
-  aviso.textContent = "Tu cuenta tiene un rol anterior o varios roles. El operador debe asignarte uno de los tres roles actuales.";
+  aviso.textContent = "Tu cuenta tiene más de un rol. El operador debe dejarte uno solo.";
 }
 let enviando = false;
 async function elegir(grupo) {

@@ -36,7 +36,7 @@ Cada usuario tiene exactamente uno de estos grupos de aplicación. Los grupos ad
 
 | Grupo | Puede hacer | Alcance |
 |---|---|---|
-| `transportistas` | Crear solicitudes, subir documentación y consultar estado. | Solo sus solicitudes, identificadas por `sub` (las históricas sin vincular conservan el criterio anterior por correo). Puede solicitar acceso a distintas sedes. |
+| `transportistas` | Crear solicitudes, subir documentación y consultar estado. | Solo sus solicitudes, identificadas por el `sub` de Cognito guardado al crearlas. Puede solicitar acceso a distintas sedes. |
 | `porteros` | Consultar solicitudes, verificar DNI/patente, registrar ingreso y egreso. | Solo `custom:sede_id`. No aprueba ni consulta reportes o auditoría. |
 | `responsables_sede` | Aprobar/rechazar, consultar solicitudes, exportar reportes y leer auditoría. | Solo `custom:sede_id`. No registra ingresos ni egresos. |
 
@@ -70,14 +70,14 @@ El ID de sede debe existir en RDS. En la base inicial: 1 Planta Central, 2 Depó
 
 El alta de transportista intenta suscribir su correo verificado. Todos los usuarios pueden reintentar desde **Activar o actualizar correos** en el inicio. El script de roles sincroniza el filtro tras asignar rol/sede. El usuario debe confirmar el correo de Amazon SNS; Cognito no confirma esa suscripción.
 
-Los filtros usan `usuario:<sub>` y, para responsables, `responsable-sede-N`. Las suscripciones las administra `gestionar-usuarios`; Terraform conserva las anteriores sin seguir administrándolas. No configurar direcciones en `notificaciones_suscriptores`. Ver [circuito, migración y recuperación de correos](notificaciones.md).
+Los filtros usan `usuario:<sub>` y, para responsables, `responsable-sede-N`. Las suscripciones las administra `gestionar-usuarios` (Terraform crea el tópico, no las suscripciones). Ver [circuito y recuperación de correos](notificaciones.md).
 
-## Actualización de un despliegue existente
+## Auditoría por sede
 
-- Migrar las suscripciones según [notificaciones.md](notificaciones.md); dejar `notificaciones_suscriptores = {}`.
-- Publicar una nueva versión de la imagen de API y aplicar juntos frontend, Lambdas y Terraform. Las sesiones anteriores con solo ID Token requieren un nuevo ingreso.
-- El grupo `administradores` se conserva temporalmente en Terraform, pero Flask no le concede permisos. Reasignar sus usuarios con el script, según la función real de cada persona. No se decide automáticamente quién debe ser portero o responsable.
-- Se agrega la tabla `auditoria_sede` mediante `create_all` para asociar nuevos logs a una sede. Los logs históricos sin asociación permanecen en `log_auditoria`; no se muestran al personal porque su sede no puede acreditarse. No se borra el historial ni se infiere la sede a partir del texto.
+Cada registro de `log_auditoria` que corresponde a una sede se asocia en `auditoria_sede`, y cada responsable consulta solo los de la suya. Las acciones sin sede (por ejemplo, la activación de cuenta de un transportista) quedan en `log_auditoria` pero no se muestran al personal de planta.
+
+## Permisos de AWS requeridos
+
 - `LabRole` debe permitir `cognito-idp:AdminGetUser`, `AdminListGroupsForUser`, `AdminAddUserToGroup`, las operaciones SNS detalladas en [notificaciones.md](notificaciones.md) y la invocación de la Lambda. El operador también necesita las operaciones de asignación usadas por el script. La validación local no confirma estos permisos en la cuenta real.
 
 ## Pruebas locales
@@ -92,7 +92,7 @@ terraform -chdir=terraform/infra validate
 
 La demostración sin AWS requiere `LOCAL_DEMO=true` al iniciar `backend/app.py`; no se habilita por la mera ausencia de JWKS. Los encabezados de demostración solo se usan en ese modo, que se rechaza si existen `DB_HOST` o `APP_ENV`. El frontend local permite elegir rol y sede para probar los mismos filtros de autorización.
 
-Este cambio no implementa PKCE ni renovación automática de JWKS. El `state` protege la correlación del login y no sustituye a PKCE. El cierre de sesión borra tokens de esta aplicación; no revoca por sí solo la sesión de Hosted UI. Mantener frontend y API por HTTP conserva la exposición del código y credenciales de sesión en tránsito: el puente HTTPS del callback no cifra esos tramos.
+La aplicación no implementa PKCE ni renovación automática de JWKS. El `state` protege la correlación del login y no sustituye a PKCE. El cierre de sesión borra tokens de esta aplicación; no revoca por sí solo la sesión de Hosted UI. Mantener frontend y API por HTTP conserva la exposición del código y credenciales de sesión en tránsito: el puente HTTPS del callback no cifra esos tramos.
 
 ## Fuentes
 
