@@ -1,0 +1,125 @@
+name: destruir-infraestructura
+
+# Baja toda la infraestructura de AccesoSeguro (terraform destroy) para no
+# consumir crédito del Learner Lab cuando no se usa: después de la corrección,
+# entre sesiones de trabajo o para volver a desplegar desde cero.
+#
+# - Se ejecuta solo a mano y pide escribir "destruir" para confirmar.
+# - Usa el mismo state remoto que desplegar-aplicacion.
+# - El bucket del state NO se borra (prevent_destroy en terraform/bootstrap):
+#   un nuevo despliegue lo reutiliza.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmacion:
+        description: 'Escribí "destruir" para confirmar que se borra toda la infraestructura (RDS, buckets y usuarios de Cognito incluidos)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# El mismo grupo que deploy.yml y terraform.yml: nunca corren a la vez un
+# destroy y un apply o un plan sobre el mismo state.
+concurrency:
+  group: accesoseguro-terraform
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: 'true'
+      PYTHONUNBUFFERED: '1'
+      # El input pasa por una variable de entorno, nunca interpolado en el script.
+      CONFIRMACION: ${{ inputs.confirmacion }}
+      STATE_KEY: accesoseguro/dev/infra.tfstate
+    steps:
+      - name: Verificar confirmación
+        run: |
+          if [ "$CONFIRMACION" != "destruir" ]; then
+            echo "::error::Confirmación incorrecta: escribir exactamente \"destruir\". No se borró nada."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.10.5'
+          terraform_wrapper: false
+
+      - name: Comprobar credenciales del Lab y ubicar el state
+        id: state
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          test -n "$AWS_SESSION_TOKEN"
+          account=$(aws sts get-caller-identity --query Account --output text)
+          bucket="${TF_STATE_BUCKET:-accesoseguro-tfstate-${account}}"
+          echo "bucket=${bucket}" >> "$GITHUB_OUTPUT"
+          # Sin state no hay nada que destruir; cualquier otro error (permisos) frena el workflow.
+          if out=$(aws s3api head-object --bucket "$bucket" --key "$STATE_KEY" --expected-bucket-owner "$account" 2>&1); then
+            echo "existe=true" >> "$GITHUB_OUTPUT"
+          elif echo "$out" | grep -q -E '\(404\)|Not Found|NoSuchBucket|NoSuchKey'; then
+            echo "existe=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No hay state de infraestructura en s3://${bucket}/${STATE_KEY}: no hay nada que destruir."
+          else
+            echo "$out"
+            echo "::error::No se pudo leer el state; revisar credenciales y TF_STATE_BUCKET."
+            exit 1
+          fi
+
+      - name: Armar backend.hcl
+        if: steps.state.outputs.existe == 'true'
+        working-directory: terraform/infra
+        env:
+          BUCKET: ${{ steps.state.outputs.bucket }}
+        run: |
+          cat > backend.hcl <<EOF
+          bucket       = "${BUCKET}"
+          key          = "${STATE_KEY}"
+          region       = "${AWS_REGION}"
+          encrypt      = true
+          use_lockfile = true
+          EOF
+
+      # lambdas.tf exige la Layer construida y actualizada (precondición),
+      # también para planificar un destroy.
+      - name: Empaquetar Layer
+        if: steps.state.outputs.existe == 'true'
+        run: python scripts/build-notifications-layer.py
+
+      - name: terraform init
+        if: steps.state.outputs.existe == 'true'
+        working-directory: terraform/infra
+        run: terraform init -input=false -backend-config=backend.hcl
+
+      # Las mismas variables que usa el despliegue (scripts/deploy.py), para que
+      # los nombres calculados coincidan con los recursos existentes.
+      - name: terraform destroy
+        if: steps.state.outputs.existe == 'true'
+        working-directory: terraform/infra
+        run: |
+          terraform destroy -input=false -auto-approve -lock-timeout=120s \
+            -var=project_name=accesoseguro -var=environment=dev -var=region=us-east-1
+
+      - name: Resumen
+        if: steps.state.outputs.existe == 'true'
+        env:
+          BUCKET: ${{ steps.state.outputs.bucket }}
+        run: |
+          {
+            echo "## Infraestructura destruida"
+            echo "Se eliminaron los recursos de \`${STATE_KEY}\`."
+            echo "El bucket del state \`${BUCKET}\` se conserva (prevent_destroy)."
+            echo "Para volver a levantar todo: **Actions → desplegar-aplicacion → Run workflow**."
+          } >> "$GITHUB_STEP_SUMMARY"

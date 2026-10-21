@@ -33,7 +33,7 @@ grupo:           ## Asigna rol: make grupo EMAIL=x@y.com GRUPO=porteros SEDE=1
 outputs:         ## Muestra URLs y nombres útiles
 	cd $(INFRA) && terraform output
 
-destroy:         ## Borra la infra (el bucket del state se conserva)
+destroy: layer   ## Borra la infra (el bucket del state se conserva)
 	cd $(INFRA) && terraform destroy
 
 layer:           ## Empaqueta dependencias Linux y código compartido de las Lambdas
