@@ -2,9 +2,8 @@
 # -----------------------------------------------------------------------------
 # Crea o borra un bucket S3 con la AWS CLI.
 #
-# Por qué existe: en el Learner Lab una service control policy prohíbe
-# s3:GetBucketObjectLockConfiguration, y el recurso aws_s3_bucket del provider
-# de AWS lo lee SIEMPRE (en cualquier versión). Por eso el bucket "pelado" se
+# Por qué existe: evita la lectura de s3:GetBucketObjectLockConfiguration,
+# restringida en el Lab usado para esta entrega. El bucket "pelado" se
 # crea acá y toda su configuración (cifrado, versionado, políticas, lifecycle,
 # website, CORS) sigue en Terraform con los recursos aws_s3_bucket_*.
 #
@@ -17,9 +16,19 @@ action="$1"
 bucket="$2"
 region="$3"
 force="${4:-false}"
+tmp_dir=$(mktemp -d)
+trap 'rm -rf "$tmp_dir"' EXIT
 
 exists() {
-  aws s3api head-bucket --bucket "$bucket" --region "$region" >/dev/null 2>&1
+  if aws s3api head-bucket --bucket "$bucket" --region "$region" > /dev/null 2> "$tmp_dir/head-error"; then
+    return 0
+  fi
+  if grep -Eq '\((404|NoSuchBucket|NotFound)\)' "$tmp_dir/head-error"; then
+    return 1
+  fi
+  # Un 403 o credenciales vencidas no significan que el bucket no exista.
+  cat "$tmp_dir/head-error" >&2
+  exit 1
 }
 
 case "$action" in
@@ -44,21 +53,30 @@ case "$action" in
       exit 0
     fi
     if [ "$force" != "true" ]; then
-      echo "force_destroy = false: el bucket $bucket se conserva (solo sale del state)."
+      # Sin autorización para vaciarlo: S3 rechaza el borrado si contiene datos.
+      # El error conserva el recurso en el state, para poder corregir y reintentar.
+      aws s3api delete-bucket --bucket "$bucket" --region "$region"
+      echo "Bucket vacío $bucket borrado."
       exit 0
     fi
-    # Vaciar todas las versiones y marcas de borrado (los buckets versionados
-    # no se pueden borrar si queda alguna).
-    for kind in Versions DeleteMarkers; do
-      while :; do
-        batch=$(aws s3api list-object-versions --bucket "$bucket" --region "$region" \
-          --no-paginate --max-keys 1000 \
-          --query "{Objects: $kind[].{Key:Key,VersionId:VersionId}}" --output json)
-        echo "$batch" | grep -q '"VersionId"' || break
-        aws s3api delete-objects --bucket "$bucket" --region "$region" --delete "$batch" >/dev/null
-      done
+    # Procesar versiones y marcas juntas: una página puede contener solo marcas
+    # y dejar versiones en páginas posteriores. También incluye objetos sin versionar.
+    while :; do
+      aws s3api list-object-versions --bucket "$bucket" --region "$region" \
+        --no-paginate --max-keys 1000 \
+        --query '{Objects: [Versions,DeleteMarkers][].{Key:Key,VersionId:VersionId}}' \
+        --output json > "$tmp_dir/batch.json"
+      count=$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)["Objects"]))' < "$tmp_dir/batch.json")
+      [ "$count" -eq 0 ] && break
+      aws s3api delete-objects --bucket "$bucket" --region "$region" \
+        --delete "file://$tmp_dir/batch.json" --output json > "$tmp_dir/deleted.json"
+      # S3 puede responder HTTP 200 y aun así devolver errores por objeto.
+      errors=$(python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("Errors", [])))' < "$tmp_dir/deleted.json")
+      if [ "$errors" -gt 0 ]; then
+        cat "$tmp_dir/deleted.json" >&2
+        exit 1
+      fi
     done
-    aws s3 rm "s3://$bucket" --recursive --region "$region" >/dev/null || true
     aws s3api delete-bucket --bucket "$bucket" --region "$region"
     echo "Bucket $bucket borrado."
     ;;

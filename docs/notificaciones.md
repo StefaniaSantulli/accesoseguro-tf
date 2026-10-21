@@ -71,7 +71,7 @@ Alarmas: evento pendiente durante más de dos ejecuciones del recuperador (míni
 Requiere Terraform 1.10 del proyecto, AWS CLI y credenciales habilitadas del Lab.
 
 1. Ejecutar `make layer` (Python con pip y curl). Descarga dependencias **Linux x86_64/Python 3.12**, el certificado público oficial de RDS, y empaqueta el código común. La Layer permite conexiones TLS con verificación del certificado de RDS. Terraform detecta fuentes desactualizadas y pide reconstruirla.
-2. Ejecutar el workflow **desplegar-aplicacion** (o `make deploy`). El pipeline prepara las tablas con una tarea puntual de ECS antes de habilitar la API y los workers. Ver [despliegue TP3](despliegue-tp3.md).
+2. Ejecutar el workflow **desplegar-aplicacion** (o `make deploy`). El pipeline prepara las tablas con una tarea puntual de ECS antes de habilitar la API y los workers. Ver [despliegue TP3](../README.md#7-paso-a-paso).
 3. Cada usuario activa y confirma su suscripción; esperar la propagación de filtros.
 4. Confirmar `alarm_email`. Probar solicitud nueva, aprobación/rechazo, vencimiento y una recuperación controlada de la DLQ con cuentas y sedes de prueba. Para probar el vencimiento sin esperar 24 horas, bajar `permiso_vigencia_segundos` en `terraform.tfvars`.
 

@@ -74,8 +74,7 @@ async function apiDownload(path, filename) {
 
 // Sube un PDF directo a S3 con una presigned URL (no pasa por la API).
 async function subirDocumento(solicitudId, archivo) {
-  const { url, max_mb } = await apiPostJSON(`/api/solicitudes/${solicitudId}/documento`, {});
-  if (archivo.size > max_mb * 1024 * 1024) throw new Error(`El PDF supera los ${max_mb} MB`);
+  const { url } = await apiPostJSON(`/api/solicitudes/${solicitudId}/documento`, { tamano: archivo.size });
   const res = await fetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/pdf" },

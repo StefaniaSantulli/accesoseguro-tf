@@ -286,11 +286,25 @@ def solicitudes_de_sede():
     return Solicitud.query.filter_by(sede_id=g.usuario["sede_id"])
 
 
-def solicitud_de_sede(id):
-    solicitud = solicitudes_de_sede().filter_by(id=id).first()
-    if solicitud is None:
-        abort(404)
-    return solicitud
+def datos_peticion():
+    if request.is_json:
+        data = request.get_json()
+        if not isinstance(data, dict):
+            abort(400, description="El cuerpo debe ser un objeto JSON")
+        return data
+    return request.form
+
+
+def texto_campo(data, campo, limite, obligatorio=False):
+    valor = data.get(campo, "")
+    if not isinstance(valor, str):
+        abort(400, description=f"{campo} debe ser texto")
+    valor = valor.strip()
+    if obligatorio and not valor:
+        abort(400, description=f"Falta {campo}")
+    if len(valor) > limite:
+        abort(400, description=f"{campo} admite hasta {limite} caracteres")
+    return valor
 
 
 # -----------------------------------------------------------------------------
@@ -315,7 +329,9 @@ def generar_url_documento(key, documento, expiracion=PRESIGNED_URL_TTL):
 
 
 def auditar(accion, detalle, sede_id=None):
-    log = LogAuditoria(accion=accion, detalle=detalle, usuario=g.get("usuario", {}).get("email"))
+    # El detalle es un resumen; el motivo completo permanece en la solicitud.
+    resumen = detalle if len(detalle) <= 300 else detalle[:297] + "..."
+    log = LogAuditoria(accion=accion, detalle=resumen, usuario=g.get("usuario", {}).get("email"))
     db.session.add(log)
     if sede_id is not None:
         db.session.flush()
@@ -356,6 +372,7 @@ def health():
     return jsonify({"status": "ok", "service": "accesoseguro-api"})
 
 
+@app.errorhandler(400)
 @app.errorhandler(403)
 @app.errorhandler(404)
 @app.errorhandler(503)
@@ -394,8 +411,8 @@ def activar_correos():
 @requiere_login()
 def elegir_rol():
     """Solo permite el alta como transportista. El personal lo asigna el operador."""
-    data = request.get_json(silent=True) or {}
-    grupo = data.get("grupo")
+    data = datos_peticion()
+    grupo = texto_campo(data, "grupo", 30)
     if grupo not in ROLES_ELEGIBLES:
         return jsonify({"error": "Rol inválido"}), 400
     if g.usuario["grupos"]:
@@ -418,19 +435,21 @@ def elegir_rol():
 @app.route("/api/solicitudes", methods=["POST"])
 @requiere_login(GRUPOS_TRANSPORTISTA)
 def crear_solicitud():
-    data = request.get_json(silent=True) or request.form
+    data = datos_peticion()
     try:
+        if type(data["sede_id"]) not in (str, int):
+            raise ValueError()
         sede_id = int(data["sede_id"])
         if not db.session.get(Sede, sede_id):
             raise ValueError()
     except (KeyError, ValueError, TypeError):
         return jsonify({"error": "Seleccioná una sede existente"}), 400
     nueva = Solicitud(
-        nombre_solicitante=data["nombre_solicitante"],
-        dni=data["dni"],
-        patente=data.get("patente"),
-        empresa=data.get("empresa"),
-        motivo=data.get("motivo"),
+        nombre_solicitante=texto_campo(data, "nombre_solicitante", 100, obligatorio=True),
+        dni=texto_campo(data, "dni", 20, obligatorio=True),
+        patente=texto_campo(data, "patente", 20),
+        empresa=texto_campo(data, "empresa", 100),
+        motivo=texto_campo(data, "motivo", 200),
         sede_id=sede_id,
         email_solicitante=g.usuario.get("email"),
     )
@@ -457,6 +476,10 @@ def url_subida_documento(id):
 
     if solicitud.estado != "pendiente":
         return jsonify({"error": "Solo se puede cambiar el documento de una solicitud pendiente"}), 409
+    # Validar antes de reemplazar la referencia al documento anterior.
+    tamano = datos_peticion().get("tamano")
+    if type(tamano) is not int or not 0 < tamano <= MAX_PDF_SIZE_MB * 1024 * 1024:
+        return jsonify({"error": f"El PDF debe tener contenido y no superar {MAX_PDF_SIZE_MB} MB"}), 400
     empresa = g.usuario.get("empresa_id") or solicitud.empresa
     key = f"empresas/{_slug(empresa)}/solicitudes/{solicitud.id}/documento-{uuid.uuid4().hex[:8]}.pdf"
     url = s3.generate_presigned_url(
@@ -501,9 +524,9 @@ def solicitudes_pendientes():
 @requiere_login(GRUPOS_RESPONSABLE)
 def resolver_solicitud(id):
     solicitud = solicitudes_de_sede().filter_by(id=id).with_for_update().first_or_404()
-    data = request.get_json(silent=True) or request.form
+    data = datos_peticion()
     accion = data.get("accion")
-    motivo = data.get("motivo_decision", "")
+    motivo = texto_campo(data, "motivo_decision", 300)
 
     if accion not in ("aprobada", "rechazada"):
         return jsonify({"error": "accion inválida"}), 400
@@ -594,8 +617,9 @@ def verificacion():
 
     resultado = solicitudes_de_sede().filter(
         Solicitud.estado == "aprobada",
+        Solicitud.hora_egreso.is_(None),
         (Solicitud.dni == busqueda) | (Solicitud.patente == busqueda),
-    ).first()
+    ).order_by(Solicitud.hora_ingreso.is_(None), Solicitud.fecha_creacion.desc(), Solicitud.id.desc()).first()
 
     if not resultado:
         return jsonify({"autorizado": False})
@@ -609,6 +633,8 @@ def registrar_ingreso(id):
     solicitud = solicitudes_de_sede().filter_by(id=id).with_for_update().first_or_404()
     if solicitud.estado != "aprobada":
         return jsonify({"error": "La solicitud no está aprobada"}), 409
+    if solicitud.hora_ingreso is not None or solicitud.hora_egreso is not None:
+        return jsonify({"error": "Esta solicitud ya registró un ingreso"}), 409
     solicitud.hora_ingreso = datetime.utcnow()
     auditar("Registro de ingreso", f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante})", solicitud.sede_id)
     db.session.commit()
@@ -618,9 +644,11 @@ def registrar_ingreso(id):
 @app.route("/api/solicitudes/<int:id>/egreso", methods=["POST"])
 @requiere_login(GRUPOS_PORTERIA)
 def registrar_egreso(id):
-    solicitud = solicitud_de_sede(id)
+    solicitud = solicitudes_de_sede().filter_by(id=id).with_for_update().first_or_404()
     if solicitud.hora_ingreso is None:
         return jsonify({"error": "Primero debe registrarse el ingreso"}), 409
+    if solicitud.hora_egreso is not None:
+        return jsonify({"error": "Esta solicitud ya registró un egreso"}), 409
     solicitud.hora_egreso = datetime.utcnow()
     auditar("Registro de egreso", f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante})", solicitud.sede_id)
     db.session.commit()

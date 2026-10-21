@@ -101,10 +101,15 @@ def pause_existing(out):
     if not out.get("ecs_service_name"):
         return
     cluster, service = out["ecs_cluster_name"], out["ecs_service_name"]
-    aws_json("application-autoscaling", "register-scalable-target", "--service-namespace", "ecs",
-             "--resource-id", f"service/{cluster}/{service}", "--scalable-dimension", "ecs:service:DesiredCount",
-             "--min-capacity", "0", "--suspended-state",
-             "DynamicScalingInSuspended=true,DynamicScalingOutSuspended=true,ScheduledScalingSuspended=true")
+    # Un apply parcial puede haber creado ECS sin llegar a crear su Auto Scaling.
+    resource_id = f"service/{cluster}/{service}"
+    targets = aws_json("application-autoscaling", "describe-scalable-targets", "--service-namespace", "ecs",
+                       "--resource-ids", resource_id, "--scalable-dimension", "ecs:service:DesiredCount")
+    if targets["ScalableTargets"]:
+        aws_json("application-autoscaling", "register-scalable-target", "--service-namespace", "ecs",
+                 "--resource-id", resource_id, "--scalable-dimension", "ecs:service:DesiredCount",
+                 "--min-capacity", "0", "--suspended-state",
+                 "DynamicScalingInSuspended=true,DynamicScalingOutSuspended=true,ScheduledScalingSuspended=true")
     aws_json("ecs", "update-service", "--cluster", cluster, "--service", service, "--desired-count", "0")
     aws_json("ecs", "wait", "services-stable", "--cluster", cluster, "--services", service)
     # Descubrir por nombre también permite actualizar desde la versión sin output deployment.
@@ -114,10 +119,14 @@ def pause_existing(out):
             mappings = aws_json("lambda", "list-event-source-mappings", "--function-name", functions[name])
             for mapping in mappings["EventSourceMappings"]:
                 if mapping["State"] != "Disabled":
-                    aws_json("lambda", "update-event-source-mapping", "--uuid", mapping["UUID"], "--no-enabled")
+                    if mapping["State"] != "Disabling":
+                        aws_json("lambda", "update-event-source-mapping", "--uuid", mapping["UUID"], "--no-enabled")
                     wait_mapping_disabled(mapping["UUID"])
-    # El nombre existe desde la primera versión; no se modifica el consumidor de auditoría.
-    aws_json("events", "disable-rule", "--name", "accesoseguro-dev-vencer-permisos")
+    # La regla también puede faltar tras un apply parcial.
+    rule = "accesoseguro-dev-vencer-permisos"
+    rules = aws_json("events", "list-rules", "--name-prefix", rule)
+    if any(item["Name"] == rule for item in rules["Rules"]):
+        aws_json("events", "disable-rule", "--name", rule)
 
 
 def wait_mapping_disabled(uuid):

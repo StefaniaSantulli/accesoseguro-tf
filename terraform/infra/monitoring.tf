@@ -145,3 +145,16 @@ resource "aws_cloudwatch_metric_alarm" "entrega_dlq" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alarmas.arn]
 }
+
+moved {
+  from = aws_cloudwatch_metric_alarm.entrega_eventos_dlq["auditoria"]
+  to   = aws_cloudwatch_metric_alarm.entrega_dlq["auditoria"]
+}
+moved {
+  from = aws_cloudwatch_metric_alarm.entrega_eventos_dlq["notificaciones"]
+  to   = aws_cloudwatch_metric_alarm.entrega_dlq["notificaciones"]
+}
+moved {
+  from = aws_cloudwatch_metric_alarm.entrega_mail_dlq
+  to   = aws_cloudwatch_metric_alarm.entrega_dlq["mail"]
+}
