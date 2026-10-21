@@ -5,8 +5,8 @@ locals {
   name_prefix = lower("${var.project_name}-${var.environment}")
   account_id  = data.aws_caller_identity.current.account_id
 
-  # slice() se queda con las primeras N zonas disponibles.
-  azs = slice(data.aws_availability_zones.available.names, 0, var.az_count)
+  # Zonas fijas del proyecto; el orden conserva los CIDR de las capas a/b.
+  azs = ["us-east-1a", "us-east-1b"]
 
   common_tags = {
     Project     = var.project_name
@@ -138,7 +138,7 @@ locals {
     notificaciones = {
       consumer       = "notificar-mail"
       source_service = "sns.amazonaws.com"
-      batch_size     = 10
+      batch_size     = 1
     }
   }
 
@@ -202,7 +202,8 @@ locals {
       memory_size = 256
       in_vpc      = true
       environment = merge(local.db_secret_env, {
-        SNS_TOPIC_ARN = aws_sns_topic.eventos_solicitud.arn
+        SNS_TOPIC_ARN        = aws_sns_topic.eventos_solicitud.arn
+        SEGUNDOS_VENCIMIENTO = tostring(var.permiso_vigencia_segundos)
       })
     }
     archivar-auditoria = {
@@ -217,23 +218,24 @@ locals {
     }
     gestionar-usuarios = {
       description = "Consulta el perfil de Cognito y habilita altas como transportista"
-      timeout     = 10
+      timeout     = 30
       memory_size = 128
       in_vpc      = false
       environment = {
         USER_POOL_ID             = aws_cognito_user_pool.main.id
         NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
+        NOTIFICACIONES_DLQ_ARN   = aws_sqs_queue.entrega_mail_dlq.arn
       }
     }
     notificar-mail = {
       description = "Arma el aviso según el evento y lo publica en el tópico SNS de mails"
       timeout     = 30
-      memory_size = 128
-      in_vpc      = false
-      environment = {
+      memory_size = 256
+      in_vpc      = true
+      environment = merge(local.db_secret_env, {
         NOTIFICACIONES_TOPIC_ARN = aws_sns_topic.notificaciones_mail.arn
         SITE_URL                 = local.site_url
-      }
+      })
     }
   }
 
@@ -286,6 +288,7 @@ locals {
     PRESIGNED_URL_TTL    = tostring(var.presigned_url_ttl_seconds)
     CORS_ALLOWED_ORIGIN  = local.site_url
     MAX_PDF_SIZE_MB      = tostring(var.max_pdf_size_mb)
+    SEGUNDOS_VENCIMIENTO = tostring(var.permiso_vigencia_segundos)
   }
 
   # ---------------------------------------------------------------------------

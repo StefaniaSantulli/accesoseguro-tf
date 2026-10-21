@@ -25,6 +25,12 @@ variable "handler" {
   default     = "handler.lambda_handler"
 }
 
+variable "layers" {
+  description = "ARNs de Layers compatibles con runtime y arquitectura."
+  type        = list(string)
+  default     = []
+}
+
 variable "runtime" {
   description = "Runtime de Lambda."
   type        = string

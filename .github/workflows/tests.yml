@@ -1,0 +1,40 @@
+name: pruebas
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: accesoseguro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d accesoseguro_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r backend/requirements.txt
+      - run: python -m unittest discover -s tests -v
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://test:test@localhost:5432/accesoseguro_test
+      - run: node tests/test_frontend_auth.cjs
+      - run: python scripts/build-notifications-layer.py
+      - name: Importar dependencias y código de la Layer en Linux
+        run: |
+          mkdir -p /tmp/accesoseguro-layer
+          unzip -q terraform/infra/.build/notificaciones-layer.zip -d /tmp/accesoseguro-layer
+          PYTHONPATH=/tmp/accesoseguro-layer/python python -c "import psycopg, sqlalchemy, notifications, notification_jobs; print('Layer OK')"

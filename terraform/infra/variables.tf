@@ -5,6 +5,10 @@ variable "region" {
   description = "Región de AWS (el Learner Lab trabaja en us-east-1)."
   type        = string
   default     = "us-east-1"
+  validation {
+    condition     = var.region == "us-east-1"
+    error_message = "La arquitectura usa us-east-1a y us-east-1b; la región debe ser us-east-1."
+  }
 }
 
 variable "project_name" {
@@ -45,9 +49,13 @@ variable "vpc_cidr" {
 }
 
 variable "az_count" {
-  description = "Cantidad de zonas de disponibilidad a usar."
+  description = "Compatibilidad con configuraciones anteriores: el proyecto usa exactamente us-east-1a y us-east-1b."
   type        = number
   default     = 2
+  validation {
+    condition     = var.az_count == 2
+    error_message = "El proyecto está fijado a dos zonas: us-east-1a y us-east-1b."
+  }
 }
 
 variable "interface_endpoints" {
@@ -122,9 +130,19 @@ variable "lambda_runtime" {
 }
 
 variable "vencer_permisos_schedule" {
-  description = "Cada cuánto corre vencer-permisos (EventBridge)."
+  description = "Frecuencia de vencimientos y recuperación de pendientes (EventBridge)."
   type        = string
-  default     = "rate(15 minutes)"
+  default     = "rate(1 minute)"
+}
+
+variable "permiso_vigencia_segundos" {
+  description = "Vigencia desde aprobación para ingresar; independiente de la frecuencia del recuperador."
+  type        = number
+  default     = 86400
+  validation {
+    condition     = var.permiso_vigencia_segundos > 0 && floor(var.permiso_vigencia_segundos) == var.permiso_vigencia_segundos
+    error_message = "La vigencia debe ser un número entero positivo de segundos."
+  }
 }
 
 variable "max_pdf_size_mb" {
@@ -232,13 +250,13 @@ variable "documentos_lifecycle" {
 # Eventos y mails
 # =============================================================================
 variable "notificaciones_suscriptores" {
-  description = "Mail => destinatario: transportista o portero (solo sus avisos), responsable-sede-N (también solicitudes de la sede N). Confirmar el correo SNS."
+  description = "LEGADO: dejar vacío. gestionar-usuarios administra suscripciones verificadas por sub y sede."
   type        = map(string)
   default     = {}
 
   validation {
-    condition     = alltrue([for rol in values(var.notificaciones_suscriptores) : can(regex("^(transportista|portero|responsable-sede-[1-9][0-9]*)$", rol))])
-    error_message = "Usar transportista, portero o responsable-sede-N, con N como ID positivo de sede."
+    condition     = length(var.notificaciones_suscriptores) == 0
+    error_message = "Quitar valores antiguos y migrar cada usuario con scripts/notificaciones.py; ver docs/notificaciones.md."
   }
 }
 

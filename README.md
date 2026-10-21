@@ -7,6 +7,8 @@ Este repositorio levanta con Terraform la arquitectura de **AccesoSeguro** (vers
 Hosted UI de Cognito, API Flask en ECS Fargate detrás de un ALB, RDS PostgreSQL Multi-AZ,
 7 Lambdas, SNS + SQS con DLQ y EventBridge; los avisos por mail salen por SNS. Sin EC2 y sin NAT Gateway.
 
+La red se despliega exclusivamente en **us-east-1a y us-east-1b**, con una subred por capa en cada zona.
+
 ---
 
 ## 1. Por qué hay dos proyectos de Terraform
@@ -96,7 +98,7 @@ flowchart LR
 | Entrada | Internet Gateway + ALB | `modules/network`, `alb.tf` | IGW, `aws_lb`, target group tipo `ip`, listener 80 |
 | Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
 | Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
-| Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópico, `module.sqs`, suscripciones, regla cada 15 min |
+| Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópico, `module.sqs`, suscripciones, recuperación cada minuto (configurable) |
 | Seguridad | VPC, SG, NACL, Secrets Manager, KMS, LabRole, CloudTrail | `network.tf`, `security.tf` | SG encadenados, NACL datos, clave KMS, secretos |
 | Operación | CloudWatch, Auto Scaling | `monitoring.tf`, `ecs.tf` | alarmas (5xx, tasks sanas, DLQ, errores Lambda, RDS) |
 
@@ -135,7 +137,6 @@ Cada módulo propio sigue la estructura recomendada en clase: `main.tf`, `variab
 | `cidrhost()` + `can()` | `modules/network/variables.tf` | Validar que `vpc_cidr` sea un CIDR válido |
 | `merge()` | network, `locals.tf` | Unir los mapas de subredes por capa; unir nombres de buckets |
 | `substr()` | network, `alb.tf` | Letra de la AZ (`us-east-1a` → `a`); recortar nombres a 32 caracteres |
-| `slice()` | `locals.tf` | Quedarse con las primeras N zonas de disponibilidad |
 | `format()` | `locals.tf`, `security.tf`, `bootstrap/main.tf` | Armar nombres de bucket, dominio de Cognito y URLs |
 | `coalesce()` | `bootstrap/main.tf` | Usar el nombre de bucket pasado o, si está vacío, uno generado |
 | `templatefile()` | `bootstrap/main.tf`, `frontend.tf` | Generar `backend.hcl` y el `config.js` del sitio con valores reales |
@@ -201,7 +202,7 @@ puede importar con `terraform import aws_s3_bucket.tfstate <nombre>`.
 ### Paso 2 — Infraestructura
 ```bash
 cd ../infra
-cp terraform.tfvars.example terraform.tfvars   # completar notificaciones_suscriptores
+cp terraform.tfvars.example terraform.tfvars   # configurar vigencia y alarm_email
 terraform init -backend-config=backend.hcl
 terraform validate
 terraform plan -out=tfplan
@@ -286,7 +287,7 @@ el `fmt -check`.
 | No se pueden crear roles IAM | ECS y Lambdas usan `LabRole` (`data.aws_iam_role.lab_role`). Sí se escriben políticas sobre los recursos (buckets, colas, KMS) |
 | No hay CloudFront ni HTTPS en el sitio | Cognito vuelve a API Gateway `/callback` (HTTPS) y la Lambda redirige al sitio con los tokens en el `#` |
 | Las tasks no tienen salida a internet | VPC Endpoints. Las llaves públicas de Cognito (JWKS) las lee Terraform (`data.http`) y se pasan al contenedor como variable de entorno |
-| SES: el LabRole no tiene `ses:VerifyEmailIdentity`, y en sandbox SES solo manda a direcciones verificadas | Los avisos salen por **SNS por mail**: tópico `notificaciones-mail` + una suscripción por persona (`notificaciones_suscriptores`). Cada una confirma con el link que manda AWS. La Lambda publica con el atributo `destinatario` y la *filter policy* de cada suscripción hace que cada uno reciba solo lo suyo (cada responsable recibe además las solicitudes nuevas de su sede). En producción se volvería a SES con el dominio verificado |
+| SES: el LabRole no tiene `ses:VerifyEmailIdentity`, y en sandbox SES solo manda a direcciones verificadas | Los avisos salen por **SNS por mail**: tópico `notificaciones-mail` + una suscripción por persona administrada por `gestionar-usuarios`. Cada una confirma con el link que manda AWS. La Lambda publica con el atributo `destinatario_id` y la *filter policy* de cada suscripción hace que cada uno reciba solo lo suyo (cada responsable recibe además las solicitudes nuevas de su sede). En producción se volvería a SES con el dominio verificado |
 | CloudTrail | El historial de 90 días existe siempre; el trail propio queda detrás de `enable_cloudtrail` |
 | Se destruye y recrea seguido | `force_destroy` en buckets, `recovery_window_in_days = 0` en secretos, `skip_final_snapshot` fuera de prod |
 
@@ -300,7 +301,7 @@ el `fmt -check`.
 - **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase,
   guarda Access Token e ID Token en sessionStorage y usa solo el primero para la API.
   Ver [guía de Cognito y roles](docs/cognito-y-roles.md).
-- **Lambdas** — `validar-documento`, `vencer-permisos` y `generar-reporte` tienen la parte de RDS
+- **Lambdas** — `validar-documento` y `generar-reporte` tienen la parte de RDS
   simulada (mock data, permitido por la consigna); el reporte CSV hoy lo genera la API.
 
 ### Probar en local (sin AWS)
@@ -309,3 +310,9 @@ cd backend && pip3 install -r requirements.txt && LOCAL_DEMO=true python3 app.py
 cd frontend && python3 -m http.server 8000                           # terminal 2
 # abrir http://localhost:8000/login.html
 ```
+
+## Notificaciones: operación y migración
+
+Ver [notificaciones.md](docs/notificaciones.md) para el circuito real, la confirmación SNS, el outbox, reintentos y recuperación de fallos. Ejecutar `make layer` antes de `make plan`. Las suscripciones se activan desde el inicio o `scripts/notificaciones.py`; el script de roles actualiza los filtros automáticamente.
+
+`vencer-permisos` ahora consulta PostgreSQL y recupera eventos reales. `notificar-mail` también usa RDS para registrar publicaciones y omitir duplicados ya procesados. La Layer incluye las dependencias Linux. El procesamiento de documentos y la Lambda de reportes conservan las limitaciones previas, fuera de este cambio.

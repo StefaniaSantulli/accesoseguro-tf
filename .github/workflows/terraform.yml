@@ -94,6 +94,14 @@ jobs:
         if: steps.creds.outputs.available == 'true'
         run: terraform init -input=false -backend-config=backend.hcl
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Empaquetar Layer de notificaciones
+        if: steps.creds.outputs.available == 'true'
+        run: python ../../scripts/build-notifications-layer.py
+
       - name: terraform plan
         if: steps.creds.outputs.available == 'true'
         id: plan

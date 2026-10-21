@@ -27,6 +27,7 @@ from urllib.parse import quote_plus
 
 import boto3
 import jwt
+import notifications
 from botocore.config import Config
 from flask import Flask, Response, abort, g, jsonify, request
 from flask_cors import CORS
@@ -45,7 +46,8 @@ ROLES_LAMBDA_NAME = os.environ.get("ROLES_LAMBDA_NAME", "")
 
 # s3v4 es obligatorio para presigned URLs de objetos cifrados con KMS.
 s3 = boto3.client("s3", region_name=REGION, config=Config(signature_version="s3v4"))
-sns = boto3.client("sns", region_name=REGION)
+sns = boto3.client("sns", region_name=REGION,
+                   config=Config(connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 2}))
 lambda_client = boto3.client("lambda", region_name=REGION)
 
 app = Flask(__name__)
@@ -80,6 +82,9 @@ app.config["SQLALCHEMY_DATABASE_URI"] = _database_url()
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 5} \
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("postgresql") else {}
 db = SQLAlchemy(app)
+# Tablas aditivas: no se borran ni reinterpretan solicitudes históricas.
+for table in notifications.metadata.tables.values():
+    table.to_metadata(db.metadata)
 
 
 class Sede(db.Model):
@@ -123,6 +128,7 @@ class Solicitud(db.Model):
     hora_egreso = db.Column(db.DateTime)
     documento_s3_key = db.Column(db.String(300))
     motivo_decision = db.Column(db.String(300))
+    # Legado: el estado de publicación ahora está en evento_pendiente, por evento.
     notificado = db.Column(db.Boolean, default=False)
 
     sede = db.relationship("Sede")
@@ -321,30 +327,20 @@ def auditar(accion, detalle, sede_id=None):
         db.session.add(AuditoriaSede(log_id=log.id, sede_id=sede_id))
 
 
-def publicar_evento(solicitud, tipo, destinatario=None):
-    """Publica el evento en SNS. Si falla, la columna notificado queda en
-    False y vencer-permisos lo vuelve a publicar más tarde."""
-    if not SNS_TOPIC_ARN:
-        return
+def guardar_evento(solicitud, tipo):
+    return notifications.enqueue(
+        db.session, solicitud_id=solicitud.id, tipo=tipo,
+        sede_id=solicitud.sede_id, sede=solicitud.sede.nombre, estado=solicitud.estado,
+    )
+
+
+def publicar_evento(event_id):
+    """Intento inmediato después del commit; si falla, el recuperador lo retoma."""
     try:
-        sns.publish(
-            TopicArn=SNS_TOPIC_ARN,
-            Message=json.dumps({
-                "tipo": tipo,
-                "solicitud_id": solicitud.id,
-                "estado": solicitud.estado,
-                "sede": solicitud.sede.nombre if solicitud.sede else None,
-                "sede_id": solicitud.sede_id,
-                "empresa": solicitud.empresa,
-                "destinatario_email": destinatario,
-                "motivo": solicitud.motivo_decision,
-                "fecha": datetime.utcnow().isoformat(),
-            }),
-        )
-        solicitud.notificado = True
-        db.session.commit()
-    except Exception as exc:
-        print(json.dumps({"level": "ERROR", "msg": "sns_publish", "error": str(exc)}))
+        with db.engine.begin() as conn:
+            notifications.publish_one(conn, sns, SNS_TOPIC_ARN, event_id=event_id)
+    except Exception:
+        app.logger.exception("El aviso %s permanece pendiente", event_id)
 
 
 def _slug(texto):
@@ -385,6 +381,15 @@ def quien_soy():
     return jsonify(g.usuario)
 
 
+@app.route("/api/notificaciones/suscripcion", methods=["POST"])
+@requiere_login(GRUPOS_APLICACION)
+def activar_correos():
+    if not AUTH_ENABLED:
+        return jsonify({"ok": True, "estado": "demo", "mensaje": "La demo local no envía correos."})
+    result = gestionar_usuario("sincronizar_notificaciones", username=g.usuario["username"], sub=g.usuario["sub"])
+    return jsonify(result), 200 if result.get("ok") else 503
+
+
 @app.route("/api/mi-rol", methods=["POST"])
 @requiere_login()
 def elegir_rol():
@@ -414,21 +419,29 @@ def elegir_rol():
 @requiere_login(GRUPOS_TRANSPORTISTA)
 def crear_solicitud():
     data = request.get_json(silent=True) or request.form
+    try:
+        sede_id = int(data["sede_id"])
+        if not db.session.get(Sede, sede_id):
+            raise ValueError()
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "Seleccioná una sede existente"}), 400
     nueva = Solicitud(
         nombre_solicitante=data["nombre_solicitante"],
         dni=data["dni"],
         patente=data.get("patente"),
         empresa=data.get("empresa"),
         motivo=data.get("motivo"),
-        sede_id=int(data["sede_id"]),
+        sede_id=sede_id,
         email_solicitante=g.usuario.get("email"),
     )
     db.session.add(nueva)
     db.session.flush()  # para tener el id
+    db.session.execute(notifications.owners.insert().values(solicitud_id=nueva.id, usuario_sub=g.usuario["sub"]))
     auditar("Nueva solicitud", f"Solicitud #{nueva.id} ({nueva.nombre_solicitante}) - sede {nueva.sede_id}", nueva.sede_id)
-    db.session.commit()  # la solicitud y su auditoría, en la misma transacción
+    event_id = guardar_evento(nueva, "solicitud_creada")
+    db.session.commit()  # solicitud, auditoría y aviso pendiente: todo o nada
 
-    publicar_evento(nueva, "solicitud_creada")
+    publicar_evento(event_id)
     return jsonify(nueva.to_dict()), 201
 
 
@@ -437,7 +450,9 @@ def crear_solicitud():
 def url_subida_documento(id):
     """Devuelve una presigned URL para que el navegador suba el PDF directo a S3."""
     solicitud = db.get_or_404(Solicitud, id)
-    if solicitud.email_solicitante != g.usuario.get("email"):
+    owner = db.session.execute(db.select(notifications.owners.c.usuario_sub).where(
+        notifications.owners.c.solicitud_id == id)).scalar_one_or_none()
+    if (owner != g.usuario["sub"] if owner else solicitud.email_solicitante != g.usuario.get("email")):
         return jsonify({"error": "La solicitud no es tuya"}), 403
 
     empresa = g.usuario.get("empresa_id") or solicitud.empresa
@@ -457,7 +472,13 @@ def url_subida_documento(id):
 @requiere_login(GRUPOS_TRANSPORTISTA)
 def mis_solicitudes():
     dni = (request.args.get("dni") or "").strip()
-    query = Solicitud.query.filter_by(email_solicitante=g.usuario["email"])
+    # Las solicitudes nuevas usan sub. Las antiguas conservan su acceso anterior
+    # hasta que el operador confirme la vinculación (ver guía de migración).
+    owner = notifications.owners
+    query = Solicitud.query.outerjoin(owner, owner.c.solicitud_id == Solicitud.id).filter(
+        (owner.c.usuario_sub == g.usuario["sub"]) |
+        (owner.c.usuario_sub.is_(None) & (Solicitud.email_solicitante == g.usuario["email"]))
+    )
     if dni:
         query = query.filter_by(dni=dni)
     return jsonify([s.to_dict() for s in query.order_by(Solicitud.fecha_creacion.desc()).all()])
@@ -476,17 +497,18 @@ def solicitudes_pendientes():
 @app.route("/api/solicitudes/<int:id>/resolver", methods=["POST"])
 @requiere_login(GRUPOS_RESPONSABLE)
 def resolver_solicitud(id):
-    solicitud = solicitud_de_sede(id)
+    solicitud = solicitudes_de_sede().filter_by(id=id).with_for_update().first_or_404()
     data = request.get_json(silent=True) or request.form
     accion = data.get("accion")
     motivo = data.get("motivo_decision", "")
 
     if accion not in ("aprobada", "rechazada"):
         return jsonify({"error": "accion inválida"}), 400
+    if solicitud.estado != "pendiente":
+        return jsonify({"error": "La solicitud ya fue resuelta"}), 409
 
     solicitud.estado = accion
     solicitud.motivo_decision = motivo
-    solicitud.notificado = False
     if accion == "aprobada":
         solicitud.fecha_aprobacion = datetime.utcnow()
 
@@ -495,9 +517,9 @@ def resolver_solicitud(id):
         f"Solicitud #{solicitud.id} ({solicitud.nombre_solicitante}) - {accion}"
         + (f" - Motivo: {motivo}" if motivo else ""), solicitud.sede_id,
     )
+    event_id = guardar_evento(solicitud, f"solicitud_{accion}")
     db.session.commit()
-
-    publicar_evento(solicitud, f"solicitud_{accion}", destinatario=solicitud.email_solicitante)
+    publicar_evento(event_id)
     return jsonify(solicitud.to_dict())
 
 
@@ -581,7 +603,8 @@ def verificacion():
 @app.route("/api/solicitudes/<int:id>/ingreso", methods=["POST"])
 @requiere_login(GRUPOS_PORTERIA)
 def registrar_ingreso(id):
-    solicitud = solicitud_de_sede(id)
+    # Mismo bloqueo que el worker: no vencer una solicitud mientras se registra ingreso.
+    solicitud = solicitudes_de_sede().filter_by(id=id).with_for_update().first_or_404()
     if solicitud.estado != "aprobada":
         return jsonify({"error": "La solicitud no está aprobada"}), 409
     solicitud.hora_ingreso = datetime.utcnow()
@@ -614,14 +637,16 @@ def expirar_vencidas():
         Solicitud.hora_ingreso.is_(None),
         Solicitud.fecha_aprobacion.isnot(None),
         Solicitud.fecha_aprobacion < limite,
-    ).all()
+    ).with_for_update(skip_locked=True).all()
 
+    eventos = []
     for s in vencidas:
         s.estado = "vencida"
         auditar("Expiración automática", f"Solicitud #{s.id} ({s.nombre_solicitante}) - vencida", s.sede_id)
+        eventos.append(guardar_evento(s, "permiso_vencido"))
     db.session.commit()
-    for s in vencidas:
-        publicar_evento(s, "permiso_vencido", destinatario=s.email_solicitante)
+    for event_id in eventos:
+        publicar_evento(event_id)
 
     return jsonify({"vencidas": len(vencidas), "ids": [s.id for s in vencidas]})
 

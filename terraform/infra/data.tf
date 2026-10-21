@@ -2,10 +2,6 @@
 
 data "aws_caller_identity" "current" {}
 
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
 # En el Learner Lab no se pueden crear roles: se usa el LabRole existente.
 data "aws_iam_role" "lab_role" {
   name = var.lab_role_name

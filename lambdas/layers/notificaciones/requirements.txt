@@ -1,0 +1,4 @@
+SQLAlchemy==2.0.52
+psycopg[binary]==3.2.3
+greenlet==3.5.5
+typing_extensions==4.16.0

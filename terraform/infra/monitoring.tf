@@ -86,3 +86,72 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage" {
   comparison_operator = "LessThanThreshold"
   alarm_actions       = [aws_sns_topic.alarmas.arn]
 }
+
+resource "aws_cloudwatch_metric_alarm" "outbox_atrasado" {
+  alarm_name          = "${local.name_prefix}-avisos-pendientes"
+  namespace           = "AccesoSeguro/Notificaciones"
+  metric_name         = "EdadPendiente"
+  dimensions          = { FunctionName = module.lambdas["vencer-permisos"].function_name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 900
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_description   = "Hay eventos sin publicar hace más de 15 minutos o el recuperador no emite métricas."
+  alarm_actions       = [aws_sns_topic.alarmas.arn]
+}
+
+# Lambda Errors no cuenta respuestas exitosas con batchItemFailures.
+resource "aws_cloudwatch_log_metric_filter" "avisos_fallidos" {
+  name           = "${local.name_prefix}-avisos-fallidos"
+  log_group_name = "/aws/lambda/${module.lambdas["notificar-mail"].function_name}"
+  pattern        = "{ $.msg = \"aviso_fallido\" }"
+  metric_transformation {
+    name      = "AvisosFallidos-${local.name_prefix}"
+    namespace = "AccesoSeguro/Notificaciones"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "avisos_fallidos" {
+  alarm_name          = "${local.name_prefix}-avisos-fallidos"
+  namespace           = "AccesoSeguro/Notificaciones"
+  metric_name         = aws_cloudwatch_log_metric_filter.avisos_fallidos.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarmas.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "entrega_eventos_dlq" {
+  for_each            = local.sns_subscribed_queues
+  alarm_name          = "${local.name_prefix}-entrega-${each.key}-fallida"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.entrega_eventos_dlq[each.key].name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarmas.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "entrega_mail_dlq" {
+  alarm_name          = "${local.name_prefix}-entrega-correo-fallida"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.entrega_mail_dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarmas.arn]
+}
