@@ -287,11 +287,12 @@ locals {
   # Variables de entorno de la API (Flask en ECS)
   # ---------------------------------------------------------------------------
   api_environment = {
-    AWS_REGION           = var.region
-    APP_ENV              = var.environment
-    AUTO_INIT_DB         = "false"
-    PORT                 = tostring(var.api_container_port)
-    DB_HOST              = aws_db_instance.main.address
+    AWS_REGION   = var.region
+    APP_ENV      = var.environment
+    AUTO_INIT_DB = "false"
+    PORT         = tostring(var.api_container_port)
+    # Con RDS Proxy activo, la API se conecta al proxy en vez de a la instancia.
+    DB_HOST              = var.enable_rds_proxy ? aws_db_proxy.main[0].endpoint : aws_db_instance.main.address
     DB_PORT              = tostring(aws_db_instance.main.port)
     DB_NAME              = var.db_name
     DB_USER              = var.db_username

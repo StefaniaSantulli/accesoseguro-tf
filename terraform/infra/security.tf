@@ -75,9 +75,10 @@ resource "aws_secretsmanager_secret_version" "db" {
     engine   = "postgres"
     username = var.db_username
     password = random_password.db.result
-    host     = aws_db_instance.main.address
-    port     = aws_db_instance.main.port
-    dbname   = var.db_name
+    # Las Lambdas leen el host de acá: con RDS Proxy activo apuntan al proxy.
+    host   = var.enable_rds_proxy ? aws_db_proxy.main[0].endpoint : aws_db_instance.main.address
+    port   = aws_db_instance.main.port
+    dbname = var.db_name
   })
 }
 
