@@ -7,17 +7,5 @@ data "aws_iam_role" "lab_role" {
   name = var.lab_role_name
 }
 
-# Llaves públicas (JWKS) del User Pool. Flask las necesita para validar la
-# firma de los tokens, pero las tasks no tienen salida a internet: se leen
-# acá y se le pasan al contenedor como variable de entorno.
-data "http" "cognito_jwks" {
-  url = format(
-    "https://cognito-idp.%s.amazonaws.com/%s/.well-known/jwks.json",
-    var.region,
-    aws_cognito_user_pool.main.id
-  )
-
-  request_headers = {
-    Accept = "application/json"
-  }
-}
+# La firma de los tokens ya no se valida en Flask: lo hace el authorizer JWT de
+# API Gateway (api.tf), que baja y renueva solo las llaves públicas de Cognito.

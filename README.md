@@ -8,7 +8,7 @@ de ingreso, el responsable de la sede la aprueba o rechaza, y portería verifica
 DNI o patente y registra el ingreso y egreso real. Todo queda centralizado y auditable.
 
 Este repositorio levanta toda la arquitectura en AWS (Learner Lab) con Terraform y GitHub Actions:
-sitio estático en S3, login con Cognito, API Flask en ECS Fargate detrás de un ALB,
+sitio estático en S3, login con Cognito, API Flask en ECS Fargate detrás de API Gateway (authorizer JWT de Cognito) y un ALB interno,
 RDS PostgreSQL Multi-AZ, 7 Lambdas, SNS + SQS con DLQ y EventBridge. Sin EC2 y sin NAT Gateway.
 
 ---
@@ -74,7 +74,7 @@ fuera de la VPC y el recorrido de un pedido de acceso de punta a punta.
 |---|---|---|---|
 | Front | S3 sitio estático | `frontend.tf` | `module.sitio`, website, policy pública de lectura, `aws_s3_object` |
 | Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 roles (transportistas, porteros y responsables_sede), dominio, app client, HTTP API |
-| Entrada | Internet Gateway + ALB | `modules/network`, `alb.tf` | IGW, `aws_lb`, target group tipo `ip`, listener 80 |
+| Entrada | API Gateway (authorizer JWT) + VPC Link + ALB interno | `api.tf`, `identity.tf`, `alb.tf` | authorizer de Cognito, rutas `/api/*` y `/health`, VPC Link, `aws_lb` interno, target group tipo `ip`, listener 80 |
 | Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
 | Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
 | Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópicos, `module.sqs`, suscripciones, DLQs de entrega, schedule cada 15 minutos (configurable) |
@@ -87,8 +87,8 @@ La red se despliega en **us-east-1a y us-east-1b**, con una subred por capa en c
 
 | Subred | CIDR | Contiene | Ruta a internet |
 |---|---|---|---|
-| publica-a / publica-b | 10.0.1.0/24 y 10.0.2.0/24 | ALB | Sí (IGW) |
-| app-a / app-b | 10.0.11.0/24 y 10.0.12.0/24 | Tasks de ECS, Lambdas en la VPC, endpoints | No |
+| publica-a / publica-b | 10.0.1.0/24 y 10.0.2.0/24 | Reservada (el ALB pasó a ser interno) | Sí (IGW) |
+| app-a / app-b | 10.0.11.0/24 y 10.0.12.0/24 | ALB interno, VPC Link, tasks de ECS, Lambdas en la VPC, endpoints | No |
 | datos-a / datos-b | 10.0.21.0/24 y 10.0.22.0/24 | RDS primaria y standby | No |
 
 Security Groups encadenados: `alb` (80 desde internet) → `ecs` (5000 solo desde `alb`) →
@@ -394,7 +394,7 @@ la cuenta se verifican al ejecutar el workflow.
 | Lectura de Object Lock restringida en el Lab | El bucket se crea con AWS CLI desde `terraform_data` + `local-exec` (módulo `s3-bucket`); cifrado, versionado, políticas, lifecycle y website siguen en Terraform. Lo mismo para el bucket del state |
 | No se pueden crear roles IAM | ECS y Lambdas usan `LabRole` (`data.aws_iam_role.lab_role`). Sí se escriben políticas sobre los recursos (buckets, colas, KMS) |
 | Se acordó mantener sitio y API por HTTP | Cognito vuelve a API Gateway `/callback` (HTTPS) y la Lambda redirige al sitio con los tokens en el `#`. Es el workaround de clase; el tramo HTTP no cifra el tráfico y no corresponde a una configuración de producción |
-| Las tasks no tienen salida a internet | VPC Endpoints. Las llaves públicas de Cognito (JWKS) las lee Terraform (`data.http`) y se pasan al contenedor como variable de entorno |
+| Las tasks no tienen salida a internet | VPC Endpoints. Las llaves públicas de Cognito ya no las necesita Flask: la firma la valida el authorizer JWT de API Gateway |
 | SES: el LabRole no tiene `ses:VerifyEmailIdentity`, y en sandbox SES solo manda a direcciones verificadas | Los avisos salen por **SNS por mail**: tópico `notificaciones-mail` + una suscripción por persona administrada por `gestionar-usuarios`. Cada una confirma con el link que manda AWS. La Lambda publica con el atributo `destinatario_id` y la *filter policy* de cada suscripción hace que cada uno reciba solo lo suyo (cada responsable recibe además las solicitudes nuevas de su sede). En producción se volvería a SES con el dominio verificado |
 | CloudTrail | El trail propio queda detrás de `enable_cloudtrail`; el [historial de eventos de administración](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html) de los últimos 90 días no lo requiere |
 | Se destruye y recrea seguido | `force_destroy` en buckets, `recovery_window_in_days = 0` en secretos, `skip_final_snapshot` fuera de prod |
@@ -403,13 +403,14 @@ la cuenta se verifican al ejecutar el workflow.
 
 ## 10. La aplicación en detalle
 
-- **`backend/`** — API Flask en ECS con PostgreSQL y credenciales de Secrets Manager. Valida el
-  Access Token y consulta el perfil y los grupos vigentes mediante `gestionar-usuarios`. Autoriza
+- **`backend/`** — API Flask en ECS con PostgreSQL y credenciales de Secrets Manager, detrás de
+  API Gateway. El authorizer JWT valida el ID Token; Flask toma del token el perfil y el grupo sin
+  consultar a Cognito en cada pedido (`gestionar-usuarios` queda para el alta y los mails). Autoriza
   tres roles: **transportistas** (solicitudes propias), **porteros** (ingresos/egresos de su sede)
   y **responsables_sede** (aprobaciones, reportes y auditoría de su sede). Los roles internos solo
   los asigna el operador AWS.
-- **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase, guarda Access Token
-  e ID Token en sessionStorage y usa solo el primero para la API.
+- **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase, guarda los tokens
+  en sessionStorage y manda el ID Token a la API.
 - **Lambdas** — las cuatro que acceden a RDS (`validar-documento`, `vencer-permisos`,
   `notificar-mail` y `generar-reporte`; `usa_rds = true` en `locals.tf`) comparten una
   [Layer](https://docs.aws.amazon.com/lambda/latest/dg/python-layers.html) con el driver

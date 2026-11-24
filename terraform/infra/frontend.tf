@@ -44,7 +44,7 @@ resource "aws_s3_object" "config_js" {
   content_type = local.mime_types["js"]
 
   content = templatefile("${local.frontend_dir}/config.js.tftpl", {
-    api_url        = "http://${aws_lb.api.dns_name}"
+    api_url        = aws_apigatewayv2_api.auth.api_endpoint
     login_url      = local.cognito_login_url
     cognito_domain = local.cognito_domain_url
     client_id      = aws_cognito_user_pool_client.web.id

@@ -21,7 +21,7 @@ PUBLIC_JWK = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(PRIVATE_KEY.public_ke
 PUBLIC_JWK['kid'] = 'test-key'
 ISSUER = 'https://cognito-idp.us-east-1.amazonaws.com/test-pool'
 ENV = {
-    'DATABASE_URL': 'sqlite://', 'COGNITO_JWKS': json.dumps({'keys': [PUBLIC_JWK]}),
+    'DATABASE_URL': 'sqlite://',
     'COGNITO_ISSUER': ISSUER, 'COGNITO_CLIENT_ID': 'test-client',
     'ROLES_LAMBDA_NAME': 'test-users', 'USER_POOL_ID': 'test-pool',
     'NOTIFICACIONES_TOPIC_ARN': 'test-mail', 'SNS_TOPIC_ARN': 'test-events',
@@ -44,10 +44,12 @@ mail = load('mail_under_test', 'lambdas/notificar-mail/handler.py')
 
 
 def token(group='transportistas', **overrides):
+    # ID token como el que valida el authorizer JWT de API Gateway.
     claims = {
-        'sub': 'user-1', 'username': 'user-1', 'iss': ISSUER,
+        'sub': 'user-1', 'cognito:username': 'user-1', 'iss': ISSUER,
         'iat': int(time.time()), 'exp': int(time.time()) + 3600,
-        'token_use': 'access', 'client_id': 'test-client',
+        'token_use': 'id', 'aud': 'test-client',
+        'email': 'one@example.invalid', 'email_verified': True, 'custom:sede_id': '1',
         'cognito:groups': [group] if group else [],
     }
     claims.update(overrides)
@@ -58,8 +60,6 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         self.client = api.app.test_client()
         api.app.config['TESTING'] = True
-        self.profile = {'ok': True, 'usuario': {'email': 'one@example.invalid', 'empresa_id': None, 'sede_id': '1'}}
-        self.current_groups = None
         api.lambda_client = Mock()
         api.s3 = Mock()
         api.sns = Mock()
@@ -67,8 +67,8 @@ class ApiTests(unittest.TestCase):
         api.s3.generate_presigned_url.return_value = 'https://s3.example.invalid/signed'
         def invoke(**kwargs):
             payload = json.loads(kwargs['Payload'])
-            if payload['accion'] == 'perfil':
-                return {'Payload': io.BytesIO(json.dumps({**self.profile, 'grupos': self.current_groups}).encode())}
+            # La API ya no pide el perfil en cada pedido: solo alta y mails.
+            assert payload['accion'] in {'alta_transportista', 'sincronizar_notificaciones'}, payload
             return {'Payload': io.BytesIO(b'{"ok": true, "grupo": "transportistas"}')}
         api.lambda_client.invoke.side_effect = invoke
         with api.app.app_context():
@@ -89,21 +89,30 @@ class ApiTests(unittest.TestCase):
             api.db.session.commit()
 
     def headers(self, group='transportistas', **claims):
-        if self.current_groups is None:
-            self.current_groups = [group] if group else []
-        return {'Authorization': 'Bearer ' + token(group, **claims)}
+        # API Gateway agrega X-Authorizer-Sub con el sub del token que validó.
+        sub = claims.get('sub', 'user-1')
+        return {'Authorization': 'Bearer ' + token(group, **claims), 'X-Authorizer-Sub': sub}
 
-    def test_access_token_accepted_and_id_token_rejected(self):
-        self.assertEqual(self.client.get('/api/me', headers=self.headers()).status_code, 200)
-        self.assertEqual(self.client.get('/api/me', headers=self.headers(token_use='id', aud='test-client')).status_code, 401)
+    def test_id_token_accepted_and_access_token_rejected(self):
+        response = self.client.get('/api/me', headers=self.headers())
+        self.assertEqual(response.status_code, 200)
+        # Los datos salen del token, sin consultar a Cognito.
+        self.assertEqual(response.get_json()['email'], 'one@example.invalid')
+        api.lambda_client.invoke.assert_not_called()
+        self.assertEqual(self.client.get('/api/me', headers=self.headers(token_use='access')).status_code, 401)
 
     def test_invalid_token_claims_rejected(self):
-        for claims in ({'client_id': 'other'}, {'iss': 'https://other.invalid'}, {'exp': 1}):
+        for claims in ({'aud': 'other'}, {'iss': 'https://other.invalid'}, {'exp': 1}):
             with self.subTest(claims=claims):
                 self.assertEqual(self.client.get('/api/me', headers=self.headers(**claims)).status_code, 401)
-        bad = token()[:-12] + 'AAAAAAAAAAAA'
-        self.assertEqual(self.client.get('/api/me', headers={'Authorization': 'Bearer ' + bad}).status_code, 401)
         self.assertEqual(self.client.get('/api/me').status_code, 401)
+
+    def test_request_that_skipped_the_authorizer_is_rejected(self):
+        # Sin el header que pone API Gateway, o con otro sub, no se confía en el token.
+        sin_marca = {'Authorization': 'Bearer ' + token()}
+        self.assertEqual(self.client.get('/api/me', headers=sin_marca).status_code, 401)
+        otro = {**sin_marca, 'X-Authorizer-Sub': 'user-2'}
+        self.assertEqual(self.client.get('/api/me', headers=otro).status_code, 401)
 
     def test_missing_required_claim_rejected(self):
         claims = jwt.decode(token(), options={'verify_signature': False})
@@ -177,18 +186,16 @@ class ApiTests(unittest.TestCase):
 
     def test_invalid_or_missing_site_denied(self):
         for sede in (None, 'abc', '999'):
-            self.profile['usuario']['sede_id'] = sede
-            self.assertEqual(self.client.get('/api/solicitudes', headers=self.headers('porteros')).status_code, 403)
+            with self.subTest(sede=sede):
+                headers = self.headers('porteros', **{'custom:sede_id': sede})
+                self.assertEqual(self.client.get('/api/solicitudes', headers=headers).status_code, 403)
 
-    def test_revoked_or_unknown_group_denied(self):
-        self.current_groups = []
-        self.assertEqual(self.client.get('/api/solicitudes', headers=self.headers('porteros')).status_code, 403)
-        self.current_groups = ['otro-grupo']
+    def test_no_group_or_unknown_group_denied(self):
+        self.assertEqual(self.client.get('/api/solicitudes', headers=self.headers(None)).status_code, 403)
         self.assertEqual(self.client.get('/api/solicitudes', headers=self.headers('otro-grupo')).status_code, 403)
 
     def test_multiple_application_roles_denied(self):
-        self.current_groups = ['porteros', 'responsables_sede']
-        headers = self.headers('porteros', **{'cognito:groups': self.current_groups})
+        headers = self.headers('porteros', **{'cognito:groups': ['porteros', 'responsables_sede']})
         self.assertEqual(self.client.get('/api/me', headers=headers).status_code, 403)
 
     def test_demo_requires_explicit_configuration_and_checks_roles(self):
@@ -197,12 +204,16 @@ class ApiTests(unittest.TestCase):
             self.assertEqual([s['id'] for s in self.client.get('/api/solicitudes', headers=headers).get_json()], [2])
             self.assertEqual(self.client.get('/api/reporte/exportar', headers=headers).status_code, 403)
 
-    def test_profile_failure_fails_closed(self):
-        self.profile = {'ok': False}
-        self.assertEqual(self.client.get('/api/me', headers=self.headers()).status_code, 403)
+    def test_unverified_email_denied(self):
+        self.assertEqual(self.client.get('/api/me', headers=self.headers(email_verified=False)).status_code, 403)
+
+    def test_lambda_failure_fails_closed_only_on_its_actions(self):
         api.lambda_client.invoke.side_effect = RuntimeError('simulado')
+        # Las pantallas normales siguen andando: ya no dependen de la Lambda.
+        self.assertEqual(self.client.get('/api/me', headers=self.headers()).status_code, 200)
         with self.assertLogs(api.app.logger, level='ERROR'):
-            self.assertEqual(self.client.get('/api/me', headers=self.headers()).status_code, 503)
+            response = self.client.post('/api/mi-rol', json={'grupo': 'transportistas'}, headers=self.headers(None))
+            self.assertEqual(response.status_code, 503)
 
     def test_bad_input_is_rejected_without_creating_requests(self):
         headers = self.headers()
@@ -277,7 +288,9 @@ class LambdaTests(unittest.TestCase):
         self.assertEqual(users.sns.subscribe.call_args.kwargs['Endpoint'], 'verified@example.invalid')
 
     def test_profile_wrong_identity_or_unverified_email_denied(self):
-        self.assertFalse(users.lambda_handler({**self.event, 'accion': 'perfil', 'sub': 'another'}, None)['ok'])
+        self.assertFalse(users.lambda_handler({**self.event, 'sub': 'another'}, None)['ok'])
+        # La acción "perfil" ya no existe: la API no consulta a Cognito por pedido.
+        self.assertFalse(users.lambda_handler({**self.event, 'accion': 'perfil'}, None)['ok'])
         users.cognito.admin_get_user.return_value['UserAttributes'][2]['Value'] = 'false'
         self.assertFalse(users.lambda_handler(self.event, None)['ok'])
 
@@ -305,8 +318,8 @@ class LambdaTests(unittest.TestCase):
 
 class ConfigurationTests(unittest.TestCase):
     def test_missing_cognito_does_not_silently_enable_demo(self):
-        with patch.dict(ENV, {'COGNITO_JWKS': ''}):
-            with self.assertRaisesRegex(RuntimeError, 'Falta COGNITO_JWKS'):
+        with patch.dict(ENV, {'COGNITO_ISSUER': ''}):
+            with self.assertRaisesRegex(RuntimeError, 'Falta COGNITO_ISSUER'):
                 load('missing_identity', 'backend/app.py')
 
     def test_demo_cannot_be_enabled_in_aws_configuration(self):

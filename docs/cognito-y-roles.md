@@ -1,6 +1,6 @@
 # Cognito y permisos de AccesoSeguro
 
-La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – IAM & Cognito – actualizada»: frontend S3 por HTTP, Cognito Hosted UI, callback HTTPS en API Gateway, Lambda que canjea el código y regreso al frontend con tokens. La API de negocio continúa por HTTP en el ALB, por decisión del proyecto.
+La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – IAM & Cognito – actualizada»: frontend S3 por HTTP, Cognito Hosted UI, callback HTTPS en API Gateway, Lambda que canjea el código y regreso al frontend con tokens. La API de negocio entra por el mismo API Gateway (HTTPS), que valida el token de Cognito con un authorizer JWT y llega a Flask por un VPC Link hacia un ALB interno.
 
 ## Qué es cada componente
 
@@ -9,10 +9,12 @@ La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – 
 | User Pool de Cognito | Directorio de usuarios, contraseñas, correo verificado, grupos y atributos. |
 | Hosted UI | Pantalla de registro e inicio de sesión administrada por Cognito. |
 | App client | Identifica a esta aplicación dentro del User Pool y sus URLs de retorno permitidas. Su secreto queda en Secrets Manager. |
-| API Gateway `/callback` | Dirección HTTPS fija que Cognito acepta para devolver el código. No recibe operaciones de negocio. |
+| API Gateway | Única entrada pública (HTTPS). `GET /callback`: retorno del login. `/api/*`: la API, protegida por un authorizer JWT de Cognito. |
+| Authorizer JWT | Valida el ID Token antes de llegar a Flask: firma (llaves públicas del User Pool, que renueva solo), emisor, audiencia y vencimiento. Token inválido: 401 sin consumir ECS. |
+| VPC Link + ALB interno | Camino privado de API Gateway a ECS. El ALB no es alcanzable desde internet: su SG solo acepta el VPC Link. |
 | Lambda `auth-callback` | Canjea el código con Cognito usando el secreto y redirige a S3. |
-| Access Token | JWT firmado que autoriza llamadas a Flask. Incluye usuario, cliente, vencimiento y `cognito:groups`. |
-| ID Token | JWT con información de perfil; el frontend lo usa para mostrar el correo. No autoriza la API. |
+| ID Token | JWT firmado que autoriza las llamadas a la API. Trae `sub`, `email`, `email_verified`, `custom:sede_id`, `custom:empresa_id` y `cognito:groups`: todo lo que Flask necesita para autorizar. |
+| Access Token | Se recibe en el login pero no se usa: no trae email ni atributos `custom:*`. |
 | Grupo de Cognito | Tipo de usuario de la aplicación. No necesita un rol IAM asociado. |
 | `custom:sede_id` | ID de la sede que puede gestionar un portero o responsable. Solo lo escribe el operador AWS. |
 | `LabRole` | Rol IAM usado por ECS y Lambda para llamar servicios AWS; es distinto del tipo de usuario de la aplicación. |
@@ -23,12 +25,12 @@ La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – 
 2. Cognito Hosted UI autentica al usuario y devuelve un código al callback HTTPS de API Gateway.
 3. API Gateway invoca `auth-callback`. La Lambda canjea el código por tokens en Cognito y redirige a S3 con `#access_token=...&id_token=...&state=...`.
 4. El frontend comprueba que `state` corresponde a la sesión iniciada, guarda los tokens en `sessionStorage` y limpia el fragmento de la URL.
-5. Cada petición a Flask envía `Authorization: Bearer <access_token>`.
-6. Flask verifica firma RSA, emisor, expiración, tipo `access` y `client_id`. No acepta un ID Token como sustituto.
-7. Flask invoca `gestionar-usuarios` por el endpoint privado de Lambda. Esta función, fuera de la VPC, consulta en Cognito el correo verificado, la sede y los grupos vigentes. Así se obtienen atributos que no vienen por defecto en el Access Token, sin dar salida a Internet a ECS.
-8. Flask compara los grupos vigentes con los del token y aplica los permisos y filtros por sede. Si cambió el rol, exige volver a iniciar sesión. La interfaz solo oculta pantallas; la autoridad es Flask.
+5. Cada petición a la API envía `Authorization: Bearer <id_token>` a API Gateway.
+6. El authorizer JWT de API Gateway verifica firma, emisor (el User Pool), audiencia (el app client) y vencimiento. Si falla, responde 401 y el pedido no llega a ECS.
+7. API Gateway reenvía el pedido por el VPC Link al ALB interno y agrega el header `X-Authorizer-Sub` con el `sub` del token validado (pisa cualquier valor que mande el cliente).
+8. Flask exige que `X-Authorizer-Sub` coincida con el token (prueba de que pasó por el authorizer), controla emisor, audiencia, vencimiento y tipo `id`, y toma del token el correo verificado, la sede, la empresa y el grupo. Aplica los permisos y filtros por sede. La interfaz solo oculta pantallas; la autoridad es Flask.
 
-Se consulta Cognito en cada petición autenticada: permite detectar cambios de rol o deshabilitaciones, a costa de invocaciones adicionales. Esta consulta reutiliza la Lambda existente.
+Ya no se consulta Cognito en cada petición. `gestionar-usuarios` se invoca solo para el alta como transportista y la suscripción a los mails. Compromiso aceptado: si el operador cambia el rol o deshabilita a un usuario, el cambio se aplica cuando vence su ID Token (60 minutos) o cuando vuelve a iniciar sesión.
 
 ## Permisos
 

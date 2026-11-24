@@ -1,13 +1,15 @@
 # =============================================================================
-# ENTRADA: Application Load Balancer, la única puerta de la API.
+# ALB INTERNO: reparte el tráfico entre las tasks de ECS.
+# La puerta pública es API Gateway (api.tf), que valida el token de Cognito y
+# llega acá por un VPC Link. Desde internet no se puede llegar al ALB.
 # =============================================================================
 
 resource "aws_lb" "api" {
   name               = substr("${local.name_prefix}-alb", 0, 32) # máx. 32 caracteres
   load_balancer_type = "application"
-  internal           = false
+  internal           = true
   security_groups    = [aws_security_group.this["alb"].id]
-  subnets            = module.network.subnet_ids_by_tier["publica"]
+  subnets            = module.network.subnet_ids_by_tier["app"]
 
   idle_timeout               = 60
   drop_invalid_header_fields = true
@@ -34,8 +36,7 @@ resource "aws_lb_target_group" "api" {
   }
 }
 
-# Listener HTTP:80. En producción: listener 443 con certificado de ACM y
-# dominio en Route 53, y el 80 redirigiendo al 443.
+# Listener HTTP:80 interno. El HTTPS lo pone API Gateway hacia el navegador.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.api.arn
   port              = 80

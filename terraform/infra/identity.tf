@@ -1,6 +1,7 @@
 # =============================================================================
 # IDENTIDAD: Cognito User Pool + Hosted UI + puente HTTPS de login.
-# Cognito autentica (quién es); Flask autoriza (qué puede hacer).
+# Cognito autentica (quién es), API Gateway valida el token y Flask autoriza
+# (qué puede hacer según el grupo y la sede que trae el token).
 # =============================================================================
 
 resource "aws_cognito_user_pool" "main" {
@@ -140,13 +141,23 @@ resource "aws_secretsmanager_secret_version" "cognito_client" {
 }
 
 # -----------------------------------------------------------------------------
-# API Gateway: SOLO para /callback. Ningún pedido de la aplicación pasa por acá;
-# la API entra por el ALB.
+# API Gateway: la única puerta pública. Tiene dos usos:
+#   - GET /callback: puente HTTPS del login (Lambda auth-callback), acá abajo.
+#   - /api/*: la API, con authorizer JWT de Cognito y VPC Link al ALB (api.tf).
 # -----------------------------------------------------------------------------
 resource "aws_apigatewayv2_api" "auth" {
   name          = "${local.name_prefix}-auth-callback"
-  description   = "Puente HTTPS para el retorno del login de Cognito"
+  description   = "Entrada HTTPS: callback del login y API con authorizer de Cognito"
   protocol_type = "HTTP"
+
+  # El sitio (S3) es otro origen. API Gateway responde el preflight OPTIONS
+  # antes del authorizer (el navegador no manda el token en el preflight).
+  cors_configuration {
+    allow_origins = [local.site_url]
+    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_headers = ["authorization", "content-type"]
+    max_age       = 3600
+  }
 }
 
 resource "aws_apigatewayv2_integration" "auth_callback" {
@@ -168,9 +179,10 @@ resource "aws_apigatewayv2_stage" "default" {
   name        = "$default"
   auto_deploy = true
 
+  # Límite para toda la API (callback y /api/*): frena abusos antes de ECS.
   default_route_settings {
-    throttling_rate_limit  = 20
-    throttling_burst_limit = 50
+    throttling_rate_limit  = 50
+    throttling_burst_limit = 100
   }
 }
 

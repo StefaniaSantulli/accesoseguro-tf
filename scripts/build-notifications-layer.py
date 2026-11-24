@@ -31,6 +31,15 @@ def main():
         subprocess.run(["curl", "--fail", "--silent", "--show-error", "--max-time", "30",
                         "--proto", "=https", "--output", str(target / "rds-ca.pem"),
                         "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem"], check=True)
+        # RDS Proxy presenta un certificado de ACM (Amazon Root CA 1), no de RDS:
+        # se suma al mismo bundle para que verify-full funcione con y sin proxy.
+        amazon_root = target / "amazon-root-ca1.pem"
+        subprocess.run(["curl", "--fail", "--silent", "--show-error", "--max-time", "30",
+                        "--proto", "=https", "--output", str(amazon_root),
+                        "https://www.amazontrust.com/repository/AmazonRootCA1.pem"], check=True)
+        with open(target / "rds-ca.pem", "a") as bundle:
+            bundle.write("\n" + amazon_root.read_text())
+        amazon_root.unlink()
         with zipfile.ZipFile(BUILD / "notificaciones-layer.zip", "w", zipfile.ZIP_DEFLATED) as archive:
             for file in sorted(target.rglob("*")):
                 if file.is_file() and "__pycache__" not in file.parts:

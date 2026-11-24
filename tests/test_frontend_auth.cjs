@@ -35,8 +35,9 @@ const access = jwt('access');
 const id = jwt('id', ['porteros'], { email: 'person@example.invalid' });
 const hash = '#access_token=' + access + '&id_token=' + id + '&state=' + 'a'.repeat(64);
 let context = browser(hash);
-assert.equal(run(context, 'getToken()'), access);
-assert.equal(run(context, 'authHeaders().Authorization'), 'Bearer ' + access);
+// API Gateway valida el ID token: es el que viaja a la API.
+assert.equal(run(context, 'getToken()'), id);
+assert.equal(run(context, 'authHeaders().Authorization'), 'Bearer ' + id);
 assert.equal(run(context, 'getRole()'), 'porteros');
 assert.equal(run(context, 'linksVisibles().some(l => l.href === "panel-aprobacion.html")'), false);
 assert.equal(run(context, 'linksVisibles().some(l => l.href === "verificacion.html")'), true);
@@ -51,11 +52,11 @@ assert.equal(run(context, 'getToken()'), null);
 context = browser('#id_token=' + id);
 assert.equal(run(context, 'getToken()'), null);
 context = browser();
-context.sessionStorage.setItem('accesoseguro_access_token', jwt('access', ['otro-grupo']));
+context.sessionStorage.setItem('accesoseguro_id_token', jwt('id', ['otro-grupo']));
 assert.equal(run(context, 'getRole()'), 'sin_rol');
-context.sessionStorage.setItem('accesoseguro_access_token', jwt('access', ['porteros', 'responsables_sede']));
+context.sessionStorage.setItem('accesoseguro_id_token', jwt('id', ['porteros', 'responsables_sede']));
 assert.equal(run(context, 'getRole()'), 'invalido');
-context.sessionStorage.setItem('accesoseguro_access_token', jwt('access', ['porteros'], { exp: 1 }));
+context.sessionStorage.setItem('accesoseguro_id_token', jwt('id', ['porteros'], { exp: 1 }));
 assert.equal(run(context, 'getRole()'), null);
 run(context, 'login()');
 assert.equal(new URL(context.window.location.href).searchParams.get('state'), context.sessionStorage.getItem('accesoseguro_oauth_state'));
@@ -68,7 +69,7 @@ assert.equal(run(context, 'linksVisibles().some(l => l.href === "verificacion.ht
 for (const [page, role] of [['panel-aprobacion', 'RESPONSABLE'], ['reporte', 'RESPONSABLE'], ['auditoria', 'RESPONSABLE'], ['verificacion', 'PORTERO'], ['mis-solicitudes', 'TRANSPORTISTA']]) {
   assert.ok(fs.readFileSync(path.join(root, `frontend/${page}.html`), 'utf8').includes(`requireRole([ROLES.${role}])`));
 }
-console.log('Frontend OK: access token, state, roles, navegación y modo demo.');
+console.log('Frontend OK: ID token, state, roles, navegación y modo demo.');
 module.exports = { passed: true, checks: 'tokens, state, roles, navegación y modo demo' };
 
 async function reportDownloadTests() {
@@ -91,7 +92,7 @@ async function reportDownloadTests() {
     return { ok: true, blob: async () => new Blob(['ID,Nombre\n']) };
   };
   await run(ctx, 'apiDownload("/api/reporte/exportar", "reporte.csv")');
-  assert.equal(calls[0].options.headers.Authorization, 'Bearer ' + access);
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer ' + id);
   assert.equal(calls[1].options.headers, undefined);
   assert.equal(calls[1].options.credentials, 'omit');
   assert.equal(run(ctx, 'escapeHtml("<script>hola</script>")'), '&lt;script&gt;hola&lt;/script&gt;');
