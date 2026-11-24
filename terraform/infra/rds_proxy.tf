@@ -1,10 +1,9 @@
 # =============================================================================
 # PRUEBA: RDS Proxy delante de RDS PostgreSQL.
 #
-# Apagado por defecto (enable_rds_proxy = false): no crea nada y el resto de
-# la infraestructura queda igual. Para probarlo:
-#   terraform plan  -var enable_rds_proxy=true
-#   terraform apply -var enable_rds_proxy=true
+# Encendido por defecto (enable_rds_proxy = true). Para desplegar sin proxy
+# (por ejemplo, para ahorrar crédito del Lab), usar -var enable_rds_proxy=false:
+# la API y las Lambdas vuelven a conectarse directo a la instancia.
 #
 # - Reutiliza el secreto que ya existe (aws_secretsmanager_secret.db).
 # - Usa LabRole: en el Learner Lab no se pueden crear roles y RDS puede
@@ -17,9 +16,9 @@
 # =============================================================================
 
 variable "enable_rds_proxy" {
-  description = "Crea un RDS Proxy de prueba delante de la base."
+  description = "Crea un RDS Proxy delante de la base (pooling de conexiones y failover más rápido)."
   type        = bool
-  default     = false
+  default     = true
 }
 
 locals {
