@@ -3,8 +3,10 @@
 - Base de datos: RDS PostgreSQL con las variables que inyecta ECS (DB_HOST,
   DB_PORT, DB_NAME, DB_USER y DB_PASSWORD desde Secrets Manager). Sin DB_HOST
   usa SQLite local (demo y pruebas).
-- Autenticación: Cognito. Flask valida el access token (firma, emisor, cliente
-  y vencimiento) con las llaves públicas que Terraform le pasa en COGNITO_JWKS.
+- Autenticación: Cognito + API Gateway. El authorizer JWT de API Gateway valida
+  el ID token (firma, emisor, audiencia y vencimiento) antes de llegar acá, y
+  Flask solo es alcanzable por el VPC Link (ALB interno). Flask lee del token
+  el email, la sede, la empresa y el grupo: no consulta a Cognito por pedido.
   Autorización: un único grupo de Cognito (transportistas, porteros o
   responsables_sede) y la sede asignada por el operador.
   La demostración sin Cognito requiere LOCAL_DEMO=true y no admite DB_HOST/APP_ENV.
@@ -41,7 +43,7 @@ MAX_PDF_SIZE_MB = int(os.environ.get("MAX_PDF_SIZE_MB", "10"))
 # Bucket de documentos (lo inyecta Terraform).
 DOCS_BUCKET = os.environ.get("DOCS_BUCKET", "accesoseguro-documentos-local")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
-# Lambda fuera de la VPC: consulta el perfil y habilita el alta de transportistas.
+# Lambda fuera de la VPC: alta como transportista y suscripción a los mails.
 ROLES_LAMBDA_NAME = os.environ.get("ROLES_LAMBDA_NAME", "")
 REPORT_LAMBDA_NAME = os.environ.get("REPORT_LAMBDA_NAME", "")
 AUTO_INIT_DB = not (os.environ.get("DB_HOST") or os.environ.get("APP_ENV")) and os.environ.get("AUTO_INIT_DB", "true").lower() == "true"
@@ -176,16 +178,14 @@ def inicializar_base():
 # -----------------------------------------------------------------------------
 # Autenticación (Cognito) y autorización (grupos)
 # -----------------------------------------------------------------------------
-COGNITO_JWKS = os.environ.get("COGNITO_JWKS", "")
 COGNITO_ISSUER = os.environ.get("COGNITO_ISSUER", "")
 COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
-AUTH_ENABLED = bool(COGNITO_JWKS)
+AUTH_ENABLED = bool(COGNITO_ISSUER and COGNITO_CLIENT_ID)
 LOCAL_DEMO = os.environ.get("LOCAL_DEMO", "").lower() == "true"
 if LOCAL_DEMO and (os.environ.get("DB_HOST") or os.environ.get("APP_ENV")):
     raise RuntimeError("LOCAL_DEMO solo se permite fuera del despliegue AWS")
 if not AUTH_ENABLED and not LOCAL_DEMO:
-    raise RuntimeError("Falta COGNITO_JWKS; para una demo local usar LOCAL_DEMO=true")
-_JWKS = jwt.PyJWKSet.from_json(COGNITO_JWKS) if AUTH_ENABLED else None
+    raise RuntimeError("Falta COGNITO_ISSUER/COGNITO_CLIENT_ID; para una demo local usar LOCAL_DEMO=true")
 
 GRUPOS_TRANSPORTISTA = {"transportistas"}
 GRUPOS_RESPONSABLE = {"responsables_sede"}
@@ -195,26 +195,31 @@ GRUPOS_APLICACION = GRUPOS_TRANSPORTISTA | GRUPOS_PERSONAL
 ROLES_ELEGIBLES = GRUPOS_TRANSPORTISTA
 
 
-def _validar_token(token):
-    kid = jwt.get_unverified_header(token).get("kid")
-    clave = next((k for k in _JWKS.keys if k.key_id == kid), None)
-    if clave is None:
-        raise jwt.InvalidTokenError("kid desconocido")
+def _claims_del_authorizer(token):
+    """Lee el ID token que el authorizer JWT de API Gateway ya validó.
+
+    La firma la verificó API Gateway con las llaves de Cognito; acá no se repite.
+    Igual se controlan emisor, audiencia, vencimiento y tipo (es barato y no
+    depende de la red), y que API Gateway haya marcado este mismo token.
+    """
     claims = jwt.decode(
         token,
-        clave.key,
-        algorithms=["RS256"],
+        options={"verify_signature": False, "verify_exp": True, "verify_iss": True, "verify_aud": True,
+                 "require": ["exp", "iss", "aud", "sub", "token_use", "cognito:username", "email"]},
         issuer=COGNITO_ISSUER,
-        # El access token de Cognito identifica al app client con client_id.
-        options={"verify_aud": False, "require": ["exp", "iat", "sub", "username", "token_use", "client_id"]},
+        audience=COGNITO_CLIENT_ID,
     )
-    if claims["token_use"] != "access" or claims["client_id"] != COGNITO_CLIENT_ID:
-        raise jwt.InvalidTokenError("se esperaba un access token de este cliente")
+    if claims["token_use"] != "id":
+        raise jwt.InvalidTokenError("se esperaba un ID token de este cliente")
+    # API Gateway pisa este header con el sub del token que validó: si falta o
+    # no coincide, el pedido no pasó por el authorizer.
+    if request.headers.get("X-Authorizer-Sub") != claims["sub"]:
+        raise jwt.InvalidTokenError("el pedido no pasó por el authorizer de API Gateway")
     return claims
 
 
 def gestionar_usuario(accion, **datos):
-    """La identidad procede del token verificado, nunca del JSON del navegador."""
+    """Solo para acciones puntuales (alta y mails). La identidad sale del token."""
     try:
         respuesta = lambda_client.invoke(
             FunctionName=ROLES_LAMBDA_NAME,
@@ -227,8 +232,8 @@ def gestionar_usuario(accion, **datos):
             raise ValueError("Respuesta inválida")
         return resultado
     except Exception:
-        app.logger.exception("No se pudo consultar la identidad en Cognito")
-        abort(503, description="No se pudo consultar el perfil de usuario")
+        app.logger.exception("No se pudo completar la acción en Cognito/SNS")
+        abort(503, description="No se pudo completar la acción, reintentá en unos minutos")
 
 
 def requiere_login(grupos=None):
@@ -245,19 +250,17 @@ def requiere_login(grupos=None):
             else:
                 cabecera = request.headers.get("Authorization", "")
                 if not cabecera.startswith("Bearer "):
-                    return jsonify({"error": "Falta el access token"}), 401
+                    return jsonify({"error": "Falta el token"}), 401
                 try:
-                    claims = _validar_token(cabecera[7:])
+                    claims = _claims_del_authorizer(cabecera[7:])
                 except (jwt.PyJWTError, ValueError, TypeError):
-                    return jsonify({"error": "Access token inválido"}), 401
-                perfil = gestionar_usuario("perfil", username=claims["username"], sub=claims["sub"])
-                if not perfil.get("ok"):
-                    return jsonify({"error": "Usuario inhabilitado o perfil no verificado"}), 403
-                grupos_token = set(claims.get("cognito:groups", []))
-                grupos_actuales = set(perfil.get("grupos", []))
-                if grupos_token & GRUPOS_APLICACION != grupos_actuales & GRUPOS_APLICACION:
-                    return jsonify({"error": "Tu rol cambió; volvé a iniciar sesión"}), 403
-                g.usuario = {**perfil["usuario"], "username": claims["username"], "sub": claims["sub"],
+                    return jsonify({"error": "Token inválido"}), 401
+                if claims.get("email_verified") not in (True, "true"):
+                    return jsonify({"error": "Verificá tu correo para usar la aplicación"}), 403
+                # Todo viene del token firmado por Cognito: no se consulta nada más.
+                g.usuario = {"sub": claims["sub"], "username": claims["cognito:username"],
+                             "email": claims["email"], "empresa_id": claims.get("custom:empresa_id"),
+                             "sede_id": claims.get("custom:sede_id"),
                              "grupos": claims.get("cognito:groups", [])}
             roles = set(g.usuario["grupos"]) & GRUPOS_APLICACION
             if len(roles) > 1:

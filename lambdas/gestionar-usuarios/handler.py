@@ -1,8 +1,10 @@
-"""Perfil confiable y alta como transportista; no permite autoasignar personal.
+"""Alta como transportista y suscripción a los mails; no permite autoasignar personal.
 
-Flask invoca esta Lambda fuera de la VPC con el username/sub del access token
-ya verificado. Cognito conserva email, sede y empresa. Solo el operador AWS
-asigna porteros/responsables_sede; estos grupos no son roles IAM.
+Ya no se llama en cada pedido: la identidad (email, sede, empresa, grupo) viaja
+en el ID token que valida API Gateway. Flask la invoca solo para dos acciones
+puntuales que Cognito no hace solo: agregar al grupo y suscribir a SNS.
+Corre fuera de la VPC porque las tasks no tienen salida a la API de Cognito.
+Solo el operador AWS asigna porteros/responsables_sede; no son roles IAM.
 """
 import json
 import os
@@ -84,7 +86,7 @@ def _perfil(username, sub):
 def lambda_handler(event, context):
     accion = event.get("accion")
     username, sub = event.get("username"), event.get("sub")
-    if not username or not sub or accion not in {"perfil", "alta_transportista", "sincronizar_notificaciones"}:
+    if not username or not sub or accion not in {"alta_transportista", "sincronizar_notificaciones"}:
         return {"ok": False, "error": "Operación no permitida"}
     if accion == "alta_transportista" and event.get("grupo") != "transportistas":
         return {"ok": False, "error": "Solo se permite el alta como transportista"}
@@ -101,9 +103,6 @@ def lambda_handler(event, context):
         token = page.get("NextToken")
         if not token:
             break
-    if accion == "perfil":
-        return {"ok": True, "usuario": perfil, "grupos": [grupo["GroupName"] for grupo in actuales]}
-
     if accion == "sincronizar_notificaciones":
         try:
             return sincronizar_notificaciones(sub, perfil, [g["GroupName"] for g in actuales])

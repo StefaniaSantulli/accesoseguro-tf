@@ -28,7 +28,8 @@ locals {
   # Security Groups encadenados: las reglas apuntan a otros grupos, no a IPs.
   # ---------------------------------------------------------------------------
   security_groups = {
-    alb       = "ALB publico: recibe HTTP desde internet"
+    alb       = "ALB interno: recibe solo desde el VPC Link de API Gateway"
+    vpclink   = "VPC Link de API Gateway hacia el ALB"
     ecs       = "Tasks de ECS (Flask)"
     lambda    = "Lambdas dentro de la VPC"
     rds       = "RDS PostgreSQL"
@@ -37,7 +38,7 @@ locals {
 
   # Todas las entradas tienen la misma forma para poder usarlas en un for_each.
   sg_ingress_rules = {
-    alb_http_internet     = { sg = "alb", port = 80, source_sg = null, cidr = "0.0.0.0/0", description = "HTTP desde internet" }
+    alb_from_vpclink      = { sg = "alb", port = 80, source_sg = "vpclink", cidr = null, description = "HTTP solo desde API Gateway (VPC Link)" }
     ecs_from_alb          = { sg = "ecs", port = var.api_container_port, source_sg = "alb", cidr = null, description = "Flask solo desde el ALB" }
     rds_from_ecs          = { sg = "rds", port = 5432, source_sg = "ecs", cidr = null, description = "PostgreSQL desde ECS" }
     rds_from_lambda       = { sg = "rds", port = 5432, source_sg = "lambda", cidr = null, description = "PostgreSQL desde Lambdas" }
@@ -48,9 +49,10 @@ locals {
   # protocol "-1" = todo el tráfico. ECS y Lambda pueden salir a cualquier
   # destino DENTRO de la VPC: igual no hay ruta a internet.
   sg_egress_rules = {
-    alb_to_ecs = { sg = "alb", protocol = "tcp", port = var.api_container_port, dest_sg = "ecs", cidr = null, description = "ALB hacia las tasks" }
-    ecs_all    = { sg = "ecs", protocol = "-1", port = null, dest_sg = null, cidr = "0.0.0.0/0", description = "Salida de ECS (sin ruta a internet)" }
-    lambda_all = { sg = "lambda", protocol = "-1", port = null, dest_sg = null, cidr = "0.0.0.0/0", description = "Salida de Lambdas (sin ruta a internet)" }
+    alb_to_ecs     = { sg = "alb", protocol = "tcp", port = var.api_container_port, dest_sg = "ecs", cidr = null, description = "ALB hacia las tasks" }
+    vpclink_to_alb = { sg = "vpclink", protocol = "tcp", port = 80, dest_sg = "alb", cidr = null, description = "VPC Link hacia el ALB" }
+    ecs_all        = { sg = "ecs", protocol = "-1", port = null, dest_sg = null, cidr = "0.0.0.0/0", description = "Salida de ECS (sin ruta a internet)" }
+    lambda_all     = { sg = "lambda", protocol = "-1", port = null, dest_sg = null, cidr = "0.0.0.0/0", description = "Salida de Lambdas (sin ruta a internet)" }
   }
 
   # ---------------------------------------------------------------------------
@@ -237,7 +239,7 @@ locals {
       }
     }
     gestionar-usuarios = {
-      description = "Consulta el perfil de Cognito y habilita altas como transportista"
+      description = "Alta como transportista y suscripción a los mails (no se llama en cada pedido)"
       timeout     = 30
       memory_size = 128
       usa_rds     = false
@@ -299,7 +301,6 @@ locals {
     COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
     COGNITO_CLIENT_ID    = aws_cognito_user_pool_client.web.id
     COGNITO_ISSUER       = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.main.id}"
-    COGNITO_JWKS         = data.http.cognito_jwks.response_body
     SNS_TOPIC_ARN        = aws_sns_topic.eventos_solicitud.arn
     DOCS_BUCKET          = local.bucket_names["documentos"]
     REPORT_LAMBDA_NAME   = module.lambdas["generar-reporte"].function_name

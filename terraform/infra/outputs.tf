@@ -4,8 +4,8 @@ output "sitio_url" {
 }
 
 output "api_url" {
-  description = "URL de la API (ALB)."
-  value       = "http://${aws_lb.api.dns_name}"
+  description = "URL pública de la API (API Gateway, HTTPS)."
+  value       = aws_apigatewayv2_api.auth.api_endpoint
 }
 
 output "login_url" {

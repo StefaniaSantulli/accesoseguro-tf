@@ -1,5 +1,6 @@
 // Workaround de clase: Cognito -> API Gateway /callback -> Lambda -> S3.
-// El access token autoriza la API; el ID token solo muestra el perfil en pantalla.
+// El ID token autoriza la API: API Gateway lo valida (authorizer JWT de Cognito)
+// y trae email, sede, empresa y grupo. El access token no se usa.
 const ROLES = { TRANSPORTISTA: "transportistas", PORTERO: "porteros", RESPONSABLE: "responsables_sede", SIN_ROL: "sin_rol", INVALIDO: "invalido" };
 const GRUPOS_RESPONSABLE = [ROLES.RESPONSABLE];
 const GRUPOS_PORTERIA = [ROLES.PORTERO];
@@ -49,7 +50,7 @@ function leerClaims(token) {
 })();
 
 function getToken() {
-  return isCognitoMode() ? storageGet(sessionStorage, "accesoseguro_access_token") : null;
+  return isCognitoMode() ? storageGet(sessionStorage, "accesoseguro_id_token") : null;
 }
 function getClaims() {
   return leerClaims(storageGet(sessionStorage, "accesoseguro_id_token"));
