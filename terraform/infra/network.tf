@@ -1,5 +1,5 @@
 # =============================================================================
-# RED: VPC en 3 capas x 2 AZ (módulo propio), Security Groups encadenados y
+# RED: VPC en 2 capas privadas x 2 AZ (módulo propio), Security Groups encadenados y
 # VPC Endpoints (no hay NAT Gateway).
 # =============================================================================
 
@@ -8,7 +8,7 @@ module "network" {
 
   name         = local.name_prefix
   vpc_cidr     = var.vpc_cidr
-  azs          = local.azs
+  azs          = var.availability_zones
   subnet_tiers = local.subnet_tiers
 
   # Segunda barrera en datos: solo entra el 5432 desde las subredes de app.

@@ -27,6 +27,13 @@ resource "aws_apigatewayv2_vpc_link" "api" {
   name               = "${local.name_prefix}-api"
   subnet_ids         = module.network.subnet_ids_by_tier["app"]
   security_group_ids = [aws_security_group.this["vpclink"].id]
+
+  lifecycle {
+    precondition {
+      condition     = length(setsubtract(var.availability_zones, data.aws_availability_zones.vpc_link.names)) == 0
+      error_message = "Elegir dos availability_zones compatibles en esta cuenta. Disponibles: ${join(", ", data.aws_availability_zones.vpc_link.names)}."
+    }
+  }
 }
 
 resource "aws_apigatewayv2_integration" "api" {
@@ -44,6 +51,7 @@ resource "aws_apigatewayv2_integration" "api" {
   # cognito:groups o custom:sede_id, no se pueden mapear a headers; Flask los
   # lee del mismo token, que API Gateway ya validó.)
   request_parameters = {
+    "overwrite:path"                    = "$request.path"
     "overwrite:header.X-Authorizer-Sub" = "$context.authorizer.claims.sub"
   }
 }

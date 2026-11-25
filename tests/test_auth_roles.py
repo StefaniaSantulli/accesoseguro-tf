@@ -309,7 +309,8 @@ class LambdaTests(unittest.TestCase):
             self.assertEqual(result['statusCode'], 302)
             url = result['headers']['Location']
             self.assertTrue(url.startswith('http://site.example.invalid/#'))
-            self.assertIn('access_token=access', url)
+            self.assertIn('id_token=id', url)
+            self.assertNotIn('access_token=', url)
             self.assertIn('state=' + state, url)
             invalid = callback.lambda_handler({'queryStringParameters': {'code': 'code'}}, None)
             self.assertIn('error=invalid_state', invalid['headers']['Location'])

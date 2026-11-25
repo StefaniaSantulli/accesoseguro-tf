@@ -1,6 +1,6 @@
 # Cognito y permisos de AccesoSeguro
 
-La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – IAM & Cognito – actualizada»: frontend S3 por HTTP, Cognito Hosted UI, callback HTTPS en API Gateway, Lambda que canjea el código y regreso al frontend con tokens. La API de negocio entra por el mismo API Gateway (HTTPS), que valida el token de Cognito con un authorizer JWT y llega a Flask por un VPC Link hacia un ALB interno.
+La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – IAM & Cognito – actualizada»: frontend S3 por HTTP, Cognito Hosted UI, callback HTTPS en API Gateway, Lambda que canjea el código y regreso al frontend con el ID token. La API de negocio entra por el mismo API Gateway (HTTPS), que valida el token de Cognito con un authorizer JWT y llega a Flask por un VPC Link hacia un ALB interno.
 
 ## Qué es cada componente
 
@@ -14,7 +14,7 @@ La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – 
 | VPC Link + ALB interno | Camino privado de API Gateway a ECS. El ALB no es alcanzable desde internet: su SG solo acepta el VPC Link. |
 | Lambda `auth-callback` | Canjea el código con Cognito usando el secreto y redirige a S3. |
 | ID Token | JWT firmado que autoriza las llamadas a la API. Trae `sub`, `email`, `email_verified`, `custom:sede_id`, `custom:empresa_id` y `cognito:groups`: todo lo que Flask necesita para autorizar. |
-| Access Token | Se recibe en el login pero no se usa: no trae email ni atributos `custom:*`. |
+| Access Token | Cognito lo entrega a la Lambda durante el canje. El callback devuelve al navegador únicamente el ID token. |
 | Grupo de Cognito | Tipo de usuario de la aplicación. No necesita un rol IAM asociado. |
 | `custom:sede_id` | ID de la sede que puede gestionar un portero o responsable. Solo lo escribe el operador AWS. |
 | `LabRole` | Rol IAM usado por ECS y Lambda para llamar servicios AWS; es distinto del tipo de usuario de la aplicación. |
@@ -23,8 +23,8 @@ La aplicación conserva el workaround de las páginas 27–29 de «Clase 6a – 
 
 1. El usuario abre S3 y pulsa **Ingresar**. El navegador genera un `state` aleatorio y lo guarda en `sessionStorage`.
 2. Cognito Hosted UI autentica al usuario y devuelve un código al callback HTTPS de API Gateway.
-3. API Gateway invoca `auth-callback`. La Lambda canjea el código por tokens en Cognito y redirige a S3 con `#access_token=...&id_token=...&state=...`.
-4. El frontend comprueba que `state` corresponde a la sesión iniciada, guarda los tokens en `sessionStorage` y limpia el fragmento de la URL.
+3. API Gateway invoca `auth-callback`. La Lambda canjea el código por tokens en Cognito y redirige a S3 con `#id_token=...&state=...`.
+4. El frontend comprueba que `state` corresponde a la sesión iniciada, guarda el ID token en `sessionStorage` y limpia el fragmento de la URL.
 5. Cada petición a la API envía `Authorization: Bearer <id_token>` a API Gateway.
 6. El authorizer JWT de API Gateway verifica firma, emisor (el User Pool), audiencia (el app client) y vencimiento. Si falla, responde 401 y el pedido no llega a ECS.
 7. API Gateway reenvía el pedido por el VPC Link al ALB interno y agrega el header `X-Authorizer-Sub` con el `sub` del token validado (pisa cualquier valor que mande el cliente).
@@ -92,9 +92,9 @@ terraform -chdir=terraform/infra init -backend=false -lockfile=readonly
 terraform -chdir=terraform/infra validate
 ```
 
-La demostración sin AWS requiere `LOCAL_DEMO=true` al iniciar `backend/app.py`; no se habilita por la mera ausencia de JWKS. Los encabezados de demostración solo se usan en ese modo, que se rechaza si existen `DB_HOST` o `APP_ENV`. El frontend local permite elegir rol y sede para probar los mismos filtros de autorización.
+La demostración sin AWS requiere `LOCAL_DEMO=true` al iniciar `backend/app.py`. Los encabezados de demostración solo se usan en ese modo, que se rechaza si existen `DB_HOST` o `APP_ENV`. El frontend local permite elegir rol y sede para probar los mismos filtros de autorización.
 
-La aplicación no implementa PKCE ni renovación automática de JWKS. El `state` protege la correlación del login y no sustituye a PKCE. El cierre de sesión borra tokens de esta aplicación; no revoca por sí solo la sesión de Hosted UI. Mantener frontend y API por HTTP conserva la exposición del código y credenciales de sesión en tránsito: el puente HTTPS del callback no cifra esos tramos.
+El login usa `state` para correlacionar el retorno de Cognito. Al cerrar sesión se borra el ID token del navegador. API Gateway gestiona las claves públicas del emisor. El sitio de S3 se sirve por HTTP por la restricción del laboratorio. Tanto el callback como las llamadas del navegador a la API usan HTTPS. [Authorizer JWT de API Gateway](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html).
 
 ## Fuentes
 

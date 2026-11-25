@@ -1,18 +1,6 @@
 # =============================================================================
-# PRUEBA: RDS Proxy delante de RDS PostgreSQL.
-#
-# Encendido por defecto (enable_rds_proxy = true). Para desplegar sin proxy
-# (por ejemplo, para ahorrar crédito del Lab), usar -var enable_rds_proxy=false:
-# la API y las Lambdas vuelven a conectarse directo a la instancia.
-#
-# - Reutiliza el secreto que ya existe (aws_secretsmanager_secret.db).
-# - Usa LabRole: en el Learner Lab no se pueden crear roles y RDS puede
-#   asumir LabRole.
-# - Va en las subredes de app: la NACL de datos solo deja entrar el 5432 desde
-#   app, así que desde ahí llega a la base sin tocar la red.
-# - Con el proxy activo, la API (DB_HOST en locals.tf) y las Lambdas (host del
-#   secreto en security.tf) se conectan al proxy en vez de a la instancia.
-# - Probado en el Learner Lab (pruebas/rds-proxy): target AVAILABLE.
+# RDS Proxy comparte las conexiones a PostgreSQL entre ECS y las Lambdas.
+# La prueba aislada del Learner Lab está en pruebas/rds-proxy/.
 # =============================================================================
 
 variable "enable_rds_proxy" {
@@ -23,6 +11,7 @@ variable "enable_rds_proxy" {
 
 locals {
   rds_proxy_enabled = var.enable_rds_proxy ? 1 : 0
+  db_host           = var.enable_rds_proxy ? aws_db_proxy.main[0].endpoint : aws_db_instance.main.address
 }
 
 # -----------------------------------------------------------------------------
@@ -42,7 +31,7 @@ resource "aws_security_group" "rds_proxy" {
   }
 }
 
-# Entrada al proxy: los mismos clientes que hoy van directo a la base.
+# Entrada al proxy desde los dos grupos de clientes SQL.
 resource "aws_vpc_security_group_ingress_rule" "rds_proxy_from" {
   for_each = var.enable_rds_proxy ? toset(["ecs", "lambda"]) : toset([])
 
@@ -66,7 +55,7 @@ resource "aws_vpc_security_group_egress_rule" "rds_proxy_to_rds" {
   referenced_security_group_id = aws_security_group.this["rds"].id
 }
 
-# Salida del proxy hacia los VPC Endpoints (Secrets Manager), por si los usa.
+# HTTPS entre el proxy y los endpoints privados.
 resource "aws_vpc_security_group_egress_rule" "rds_proxy_to_endpoints" {
   count = local.rds_proxy_enabled
 
@@ -89,7 +78,7 @@ resource "aws_vpc_security_group_ingress_rule" "endpoints_from_rds_proxy" {
   referenced_security_group_id = aws_security_group.rds_proxy[0].id
 }
 
-# La base acepta conexiones del proxy (se suma a las de ECS y Lambdas).
+# Con proxy activo, solo este grupo puede abrir conexiones a la base.
 resource "aws_vpc_security_group_ingress_rule" "rds_from_proxy" {
   count = local.rds_proxy_enabled
 
@@ -138,7 +127,7 @@ resource "aws_db_proxy_default_target_group" "main" {
   connection_pool_config {
     max_connections_percent      = 90
     max_idle_connections_percent = 50
-    connection_borrow_timeout    = 120
+    connection_borrow_timeout    = 5 # deja tiempo para la consulta dentro de la invocación
   }
 }
 

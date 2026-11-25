@@ -9,7 +9,7 @@ DNI o patente y registra el ingreso y egreso real. Todo queda centralizado y aud
 
 Este repositorio levanta toda la arquitectura en AWS (Learner Lab) con Terraform y GitHub Actions:
 sitio estático en S3, login con Cognito, API Flask en ECS Fargate detrás de API Gateway (authorizer JWT de Cognito) y un ALB interno,
-RDS PostgreSQL Multi-AZ, 7 Lambdas, SNS + SQS con DLQ y EventBridge. Sin EC2 y sin NAT Gateway.
+RDS Proxy y PostgreSQL Multi-AZ, 7 Lambdas, SNS + SQS con DLQ y EventBridge. Sin EC2 y sin NAT Gateway.
 
 ---
 
@@ -45,18 +45,19 @@ RDS PostgreSQL Multi-AZ, 7 Lambdas, SNS + SQS con DLQ y EventBridge. Sin EC2 y s
 ### Diagrama de arquitectura
 
 El diagrama muestra la arquitectura desplegada por este repositorio: la VPC en `us-east-1a` y
-`us-east-1b` con tres capas de subredes (pública, aplicación y datos), los servicios gestionados
+`us-east-1b` con dos capas de subredes privadas (aplicación y datos), los servicios gestionados
 fuera de la VPC y el recorrido de un pedido de acceso de punta a punta.
 
+![Diagrama de arquitectura AWS](docs/img/accesoseguro-diagrama-v2.png)
 
-![Diagrama de arquitectura AWS](docs/img/accesoseguro-diagrama.png)
+[Diagrama editable](docs/img/accesoseguro-diagrama-v2.drawio)
 
 
 
 ### Flujo principal
 
 1. El usuario entra al sitio (S3) e inicia sesión en la Hosted UI de Cognito. Cognito vuelve a
-   API Gateway `/callback`, la Lambda `auth-callback` canjea el código y redirige al sitio con los tokens.
+   API Gateway `/callback`, la Lambda `auth-callback` canjea el código y redirige al sitio con el ID token.
 2. El **transportista** crea una solicitud. La API (ECS Fargate, detrás del ALB) la guarda en RDS.
    Si adjunta un PDF, lo sube directo a S3 con una URL firmada; S3 avisa a `cola-documentos` y la
    Lambda `validar-documento` registra el resultado en RDS.
@@ -76,23 +77,27 @@ fuera de la VPC y el recorrido de un pedido de acceso de punta a punta.
 | Identidad | Cognito + API Gateway /callback + Lambda | `identity.tf` | User Pool, 3 roles (transportistas, porteros y responsables_sede), dominio, app client, HTTP API |
 | Entrada | API Gateway (authorizer JWT) + VPC Link + ALB interno | `api.tf`, `identity.tf`, `alb.tf` | authorizer de Cognito, rutas `/api/*` y `/health`, VPC Link, `aws_lb` interno, target group tipo `ip`, listener 80 |
 | Cómputo | ECS Fargate, ECR, 7 Lambdas | `ecs.tf`, `lambdas.tf` | cluster, task definition, service, autoscaling, `module.lambdas` |
-| Datos | RDS Multi-AZ, 2 buckets privados | `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
+| Datos | RDS Proxy, PostgreSQL Multi-AZ, 2 buckets privados | `rds_proxy.tf`, `database.tf`, `storage.tf` | `aws_db_instance.main`, `module.buckets` |
 | Eventos | SNS, SQS + DLQ, EventBridge, SNS por mail | `messaging.tf`, `lambdas.tf` | tópicos, `module.sqs`, suscripciones, DLQs de entrega, schedule cada 15 minutos (configurable) |
 | Seguridad | VPC, SG, NACL, Secrets Manager, KMS, LabRole; CloudTrail propio opcional | `network.tf`, `security.tf` | SG encadenados, NACL de datos, clave KMS, secretos; `enable_cloudtrail = false` por defecto |
 | Operación | CloudWatch, Auto Scaling | `monitoring.tf`, `ecs.tf` | alarmas (5xx, tasks sanas, DLQ, errores Lambda, RDS, avisos atrasados) |
 
 ### Red
 
-La red se despliega en **us-east-1a y us-east-1b**, con una subred por capa en cada zona.
+Por defecto se usan **us-east-1a y us-east-1b**, con una subred por capa en cada zona. Terraform verifica los identificadores físicos de la cuenta. Si una zona resulta incompatible, el plan indica las alternativas para `availability_zones`. Cambiar una zona de una instalación existente puede reemplazar subredes. [Zonas admitidas por VPC Link](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-vpc-links-v2.html#apigateway-vpc-links-availability) · [Restricciones de RDS Proxy](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.html).
 
 | Subred | CIDR | Contiene | Ruta a internet |
 |---|---|---|---|
-| publica-a / publica-b | 10.0.1.0/24 y 10.0.2.0/24 | Reservada (el ALB pasó a ser interno) | Sí (IGW) |
-| app-a / app-b | 10.0.11.0/24 y 10.0.12.0/24 | ALB interno, VPC Link, tasks de ECS, Lambdas en la VPC, endpoints | No |
+| app-a / app-b | 10.0.11.0/24 y 10.0.12.0/24 | ALB interno, VPC Link, tasks de ECS, Lambdas en la VPC, RDS Proxy y endpoints | No |
 | datos-a / datos-b | 10.0.21.0/24 y 10.0.22.0/24 | RDS primaria y standby | No |
 
-Security Groups encadenados: `alb` (80 desde internet) → `ecs` (5000 solo desde `alb`) →
-`rds` (5432 solo desde `ecs` y `lambda`); `endpoints` (443 desde `ecs` y `lambda`).
+El navegador llama a API Gateway por HTTPS. Las rutas `/api/*` validan el JWT antes de entrar por el VPC Link. El ALB interno admite HTTP en el puerto 80 solo desde ese enlace y envía las solicitudes a Flask en el 5000. Flask controla el rol y la sede. Las cuatro subredes conservan conectividad privada a través de la VPC y de los endpoints de AWS. [Integraciones privadas de API Gateway](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-private.html).
+
+### Conexiones a PostgreSQL
+
+ECS y cuatro Lambdas usan RDS Proxy por defecto. Al coincidir validaciones de documentos, reportes, vencimientos y avisos, las Lambdas abren conexiones de corta duración. El proxy comparte las conexiones a PostgreSQL entre clientes y reduce la presión sobre el límite de la instancia. Su beneficio depende de la concurrencia. [Lambda y RDS Proxy](https://docs.aws.amazon.com/lambda/latest/dg/services-rds.html).
+
+Con `enable_rds_proxy=true`, la base acepta conexiones en el puerto 5432 solo desde el proxy. Con `false`, ECS y las Lambdas reciben el endpoint de la instancia y sus grupos de seguridad obtienen acceso directo. En ambos modos las Lambdas validan el certificado TLS y aplican sus límites de consulta y bloqueo por transacción. La [prueba aislada](pruebas/rds-proxy/main.tf) verifica el registro del destino. El despliegue completo prueba la conexión ejecutando una consulta real desde `generar-reporte`.
 
 ---
 
@@ -147,11 +152,11 @@ No hace falta crear tablas ni subir la imagen a mano. El workflow:
 3. Si ya hay una instalación, pausa la API, el Auto Scaling y los consumidores que usan RDS
    (auditoría sigue activa).
 4. `plan` y `apply` con `deployment_ready=false` y publica la imagen en ECR.
-5. Ejecuta `python manage_db.py upgrade` como
+5. Con el proxy activo, espera que el destino figure como `AVAILABLE`. Ejecuta `python manage_db.py upgrade` como
    [tarea puntual de ECS](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/standalone-tasks.html),
    con la misma imagen, red y permisos que la API: crea tablas, relaciones y tres sedes iniciales.
-6. `plan` y `apply` con `deployment_ready=true`; activa ECS y comprueba revisión, cantidad de
-   tareas, `/health`, el sitio y una invocación real de reportes.
+6. Invoca `generar-reporte` para verificar la conexión de Lambda, la consulta SQL y la escritura del CSV en S3 antes de habilitar los consumidores.
+7. Aplica `deployment_ready=true`, activa ECS y comprueba la revisión, la cantidad de tareas, `/health`, el sitio y el rechazo de una petición anónima a `/api/me` (401).
 
 La imagen usa el SHA completo del commit como tag inmutable: repetir el commit reutiliza la imagen.
 Si falla la imagen o la inicialización de la base, el script no avanza a la activación.
@@ -213,7 +218,7 @@ make init
 ## 5. Destruir al terminar
 
 Conviene bajar la infraestructura cuando no se usa (después de la corrección o entre sesiones),
-porque RDS Multi-AZ, el ALB, los VPC Endpoints y las tasks de Fargate consumen crédito del Lab.
+porque RDS Multi-AZ, RDS Proxy, el ALB, los VPC Endpoints y las tasks de Fargate consumen crédito del Lab.
 
 1. **Actions → destruir-infraestructura → Run workflow**.
 2. En el campo de confirmación escribir `destruir` (cualquier otro texto cancela sin borrar nada).
@@ -276,7 +281,7 @@ Ese bucket tiene que existir antes que el Terraform principal, por eso hay dos p
 
 | Módulo | Tipo | Para qué | Cómo se usa |
 |---|---|---|---|
-| `modules/network` | **Propio** | VPC en 3 capas x 2 AZ, IGW, tablas de ruteo y NACL | Una vez, en `network.tf` |
+| `modules/network` | **Propio** | VPC en 2 capas privadas x 2 AZ, tablas de ruteo y NACL | Una vez, en `network.tf` |
 | `modules/lambda-function` | **Propio** | Empaquetar y crear una Lambda con su log group | Una llamada con `for_each` crea las 7 |
 | `modules/sqs-with-dlq` | **Propio** | Cola + DLQ + alarma | Una llamada con `for_each` crea las 3 colas |
 | `modules/s3-bucket` | **Propio** | Bucket con cifrado, versionado, políticas, lifecycle, CORS y website, compatible con el Learner Lab | `for_each` (documentos y auditoría), una vez para el sitio y con `count` para CloudTrail |
@@ -292,7 +297,7 @@ Cada módulo propio tiene `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`
 | `cidrhost()` + `can()` | `modules/network/variables.tf` | Validar que `vpc_cidr` sea un CIDR válido |
 | `merge()` | network, `locals.tf` | Unir los mapas de subredes por capa; unir nombres de buckets |
 | `substr()` | network, `alb.tf` | Letra de la AZ (`us-east-1a` → `a`); recortar nombres a 32 caracteres |
-| `format()` | `locals.tf`, `data.tf`, `bootstrap/main.tf` | Armar nombres de bucket, key del state, dominio de Cognito y URLs (login y JWKS) |
+| `format()` | `locals.tf`, `data.tf`, `bootstrap/main.tf` | Armar nombres de bucket, key del state, dominio de Cognito y URL de login |
 | `coalesce()` | `bootstrap/main.tf` | Usar el nombre de bucket pasado o, si está vacío, uno generado |
 | `templatefile()` | `bootstrap/main.tf`, `frontend.tf` | Generar `backend.hcl` y el `config.js` del sitio con valores reales |
 | `jsonencode()` | KMS, bucket policies, SQS, ECS, ECR | Escribir políticas y definiciones JSON en HCL |
@@ -313,8 +318,8 @@ Cada módulo propio tiene `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`
 
 | Meta-argumento | Dónde | Por qué |
 |---|---|---|
-| `for_each` | Subredes, rutas, SG y sus reglas, endpoints, grupos de Cognito, `module.lambdas`, `module.sqs`, `module.buckets`, event source mappings, suscripciones SNS, alarmas | Crear N recursos parecidos a partir de un mapa, con claves estables (`publica-a`, `cola-auditoria`) |
-| `count` | IGW (si hay capa pública), CloudTrail y su bucket (`enable_cloudtrail`, también sobre un `module`), website / lifecycle / CORS opcionales en `s3-bucket`, suscripción de alarmas por mail, tabla DynamoDB de locks, `local_file` del backend | Recursos opcionales: 0 o 1 según una variable |
+| `for_each` | Subredes, rutas, SG y sus reglas, endpoints, grupos de Cognito, `module.lambdas`, `module.sqs`, `module.buckets`, event source mappings, suscripciones SNS, alarmas | Crear N recursos parecidos a partir de un mapa, con claves estables (`app-a`, `cola-auditoria`) |
+| `count` | RDS Proxy, CloudTrail y su bucket (`enable_cloudtrail`, también sobre un `module`), website / lifecycle / CORS opcionales en `s3-bucket`, suscripción de alarmas por mail, tabla DynamoDB de locks, `local_file` del backend | Recursos opcionales: 0 o 1 según una variable |
 | `depends_on` | Policy del bucket después del public access block; notificación S3 después de la policy de la cola; suscripción SNS después de la policy; servicio ECS después del listener y de los endpoints; CloudTrail después de la policy del bucket; log group antes de la Lambda | Dependencias que AWS exige pero que Terraform no puede deducir de las referencias |
 | `lifecycle { prevent_destroy }` | Bucket del state (`bootstrap/`) | Que un `destroy` nunca borre el state |
 | `lifecycle { create_before_destroy }` | Security Groups, parameter group de RDS | Reemplazar sin cortar: AWS no deja borrar un SG en uso |
@@ -332,6 +337,7 @@ no eliminarlos por limpieza.
 | Entrada / salida | Uso |
 |---|---|
 | `api_min_tasks`, `api_max_tasks`, `api_cpu`, `api_memory` | Capacidad de ECS; por defecto 2–4 tareas, 256 CPU y 512 MB por tarea |
+| `enable_rds_proxy` | Activo por defecto para ECS y las Lambdas que usan SQL |
 | `db_instance_class`, `db_multi_az`, `db_allocated_storage` | RDS: `db.t3.micro`, Multi-AZ y 20 GB por defecto |
 | `permiso_vigencia_segundos`, `vencer_permisos_intervalo_minutos` | Vigencia de 24 horas; revisión y reintentos cada 15 minutos |
 | `max_pdf_size_mb`, `presigned_url_ttl_seconds` | PDF máximo de 10 MB; enlaces firmados de 300 segundos |
@@ -361,10 +367,10 @@ Todas las entradas están en [variables.tf](terraform/infra/variables.tf), con e
 │   ├── infra/                        # 2do Terraform: la arquitectura, un archivo por capa
 │   │   ├── versions.tf  variables.tf  locals.tf  data.tf  outputs.tf
 │   │   ├── network.tf  security.tf  frontend.tf  storage.tf  identity.tf
-│   │   ├── alb.tf  ecs.tf  database.tf  lambdas.tf  messaging.tf  monitoring.tf
+│   │   ├── api.tf  alb.tf  ecs.tf  rds_proxy.tf  database.tf  lambdas.tf  messaging.tf  monitoring.tf
 │   │   └── backend.hcl.example  terraform.tfvars.example
 │   └── modules/                      # módulos propios
-│       ├── network/                  # VPC, subredes, IGW, rutas y NACL
+│       ├── network/                  # VPC, subredes, rutas y NACL
 │       ├── lambda-function/          # Lambda + zip + log group
 │       ├── sqs-with-dlq/             # cola + DLQ + alarma
 │       └── s3-bucket/                # bucket compatible con el Learner Lab
@@ -393,7 +399,7 @@ la cuenta se verifican al ejecutar el workflow.
 |---|---|
 | Lectura de Object Lock restringida en el Lab | El bucket se crea con AWS CLI desde `terraform_data` + `local-exec` (módulo `s3-bucket`); cifrado, versionado, políticas, lifecycle y website siguen en Terraform. Lo mismo para el bucket del state |
 | No se pueden crear roles IAM | ECS y Lambdas usan `LabRole` (`data.aws_iam_role.lab_role`). Sí se escriben políticas sobre los recursos (buckets, colas, KMS) |
-| Se acordó mantener sitio y API por HTTP | Cognito vuelve a API Gateway `/callback` (HTTPS) y la Lambda redirige al sitio con los tokens en el `#`. Es el workaround de clase; el tramo HTTP no cifra el tráfico y no corresponde a una configuración de producción |
+| El sitio estático de S3 usa HTTP | Cognito vuelve a API Gateway `/callback` (HTTPS) y la Lambda redirige al sitio con el ID token en el `#`. Es el workaround de clase; el tramo HTTP no cifra el tráfico y no corresponde a una configuración de producción |
 | Las tasks no tienen salida a internet | VPC Endpoints. Las llaves públicas de Cognito ya no las necesita Flask: la firma la valida el authorizer JWT de API Gateway |
 | SES: el LabRole no tiene `ses:VerifyEmailIdentity`, y en sandbox SES solo manda a direcciones verificadas | Los avisos salen por **SNS por mail**: tópico `notificaciones-mail` + una suscripción por persona administrada por `gestionar-usuarios`. Cada una confirma con el link que manda AWS. La Lambda publica con el atributo `destinatario_id` y la *filter policy* de cada suscripción hace que cada uno reciba solo lo suyo (cada responsable recibe además las solicitudes nuevas de su sede). En producción se volvería a SES con el dominio verificado |
 | CloudTrail | El trail propio queda detrás de `enable_cloudtrail`; el [historial de eventos de administración](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html) de los últimos 90 días no lo requiere |
@@ -409,7 +415,7 @@ la cuenta se verifican al ejecutar el workflow.
   tres roles: **transportistas** (solicitudes propias), **porteros** (ingresos/egresos de su sede)
   y **responsables_sede** (aprobaciones, reportes y auditoría de su sede). Los roles internos solo
   los asigna el operador AWS.
-- **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase, guarda los tokens
+- **`frontend/`** — HTML/CSS/JS sin build. Conserva el callback HTTPS de clase, guarda el ID token
   en sessionStorage y manda el ID Token a la API.
 - **Lambdas** — las cuatro que acceden a RDS (`validar-documento`, `vencer-permisos`,
   `notificar-mail` y `generar-reporte`; `usa_rds = true` en `locals.tf`) comparten una

@@ -7,7 +7,7 @@ variable "region" {
   default     = "us-east-1"
   validation {
     condition     = var.region == "us-east-1"
-    error_message = "La arquitectura usa us-east-1a y us-east-1b; la región debe ser us-east-1."
+    error_message = "El despliegue del laboratorio requiere us-east-1."
   }
 }
 
@@ -42,6 +42,17 @@ variable "lab_role_name" {
 # =============================================================================
 # Red
 # =============================================================================
+variable "availability_zones" {
+  description = "Dos zonas del Lab compatibles con VPC Link V2 y RDS Proxy. El orden determina los CIDR."
+  type        = list(string)
+  default     = ["us-east-1a", "us-east-1b"]
+
+  validation {
+    condition     = length(var.availability_zones) == 2 && length(distinct(var.availability_zones)) == 2
+    error_message = "Elegir dos zonas de disponibilidad distintas."
+  }
+}
+
 variable "vpc_cidr" {
   description = "CIDR de la VPC."
   type        = string

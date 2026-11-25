@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,12 +90,16 @@ def bootstrap(bucket, account):
             remote_init(True)
 
 
-def apply_phase(tag, ready):
+def plan_phase(tag, ready):
     plan = "ready.tfplan" if ready else "prepare.tfplan"
     tf("infra", "plan", "-input=false", "-lock-timeout=120s", f"-out={plan}",
        f"-var=api_image_tag={tag}", f"-var=deployment_ready={str(ready).lower()}",
        "-var=project_name=accesoseguro", "-var=environment=dev", "-var=region=us-east-1")
-    tf("infra", "apply", "-input=false", plan)
+    return plan
+
+
+def apply_phase(tag, ready):
+    tf("infra", "apply", "-input=false", plan_phase(tag, ready))
 
 
 def pause_existing(out):
@@ -153,6 +158,20 @@ def push_image(tag, repository):
     run(["docker", "push", f"{repository}:{tag}"])
 
 
+def esperar_proxy(nombre):
+    # El registro del target termina antes de que acepte conexiones SQL.
+    estado, motivo = "SIN_DESTINO", ""
+    for _ in range(60):
+        targets = aws_json("rds", "describe-db-proxy-targets", "--db-proxy-name", nombre)["Targets"]
+        if targets:
+            health = targets[0].get("TargetHealth", {})
+            estado, motivo = health.get("State"), health.get("Reason", "")
+            if estado == "AVAILABLE":
+                return
+        time.sleep(5)
+    raise RuntimeError(f"El destino de RDS Proxy no está disponible ({estado} {motivo})")
+
+
 def migrate(out):
     deployment = out["deployment"]
     response = aws_json("ecs", "run-task", "--cluster", out["ecs_cluster_name"], "--launch-type", "FARGATE",
@@ -171,6 +190,17 @@ def migrate(out):
         raise RuntimeError(f"Falló la inicialización de RDS. Revisar la tarea {task} y sus logs en CloudWatch")
 
 
+def comprobar_reporte(out):
+    # Verifica Layer, secreto, SQL y escritura real del reporte (sin solicitudes ficticias).
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = Path(tmp) / "report.json"
+        result = aws_json("lambda", "invoke", "--function-name", out["lambda_functions"]["generar-reporte"],
+                          "--cli-binary-format", "raw-in-base64-out", "--payload", '{"sede_id":1}', str(payload))
+        report = json.loads(payload.read_text())
+        if result.get("FunctionError") or not report.get("ok"):
+            raise RuntimeError("La comprobación de la Lambda de reportes falló")
+
+
 def activate(out):
     aws_json("ecs", "update-service", "--cluster", out["ecs_cluster_name"], "--service", out["ecs_service_name"],
              "--desired-count", str(out["deployment"]["desired_count"]), "--force-new-deployment")
@@ -187,14 +217,13 @@ def activate(out):
     with urlopen(out["sitio_url"], timeout=15) as response:
         if response.status != 200:
             raise RuntimeError("El sitio no responde")
-    # Verifica Layer, secreto, SQL y escritura real del reporte (sin solicitudes ficticias).
-    with tempfile.TemporaryDirectory() as tmp:
-        payload = Path(tmp) / "report.json"
-        result = aws_json("lambda", "invoke", "--function-name", out["lambda_functions"]["generar-reporte"],
-                          "--cli-binary-format", "raw-in-base64-out", "--payload", '{"sede_id":1}', str(payload))
-        report = json.loads(payload.read_text())
-        if result.get("FunctionError") or not report.get("ok"):
-            raise RuntimeError("La comprobación de la Lambda de reportes falló")
+    try:
+        with urlopen(out["api_url"] + "/api/me", timeout=15):
+            raise RuntimeError("La ruta protegida /api/me aceptó un pedido anónimo")
+    except HTTPError as exc:
+        if exc.code != 401:
+            raise
+
     print("Despliegue verificado. Sitio:", out["sitio_url"], flush=True)
 
 
@@ -205,11 +234,18 @@ def deploy(tag, bucket, account):
     bootstrap(bucket, account)
     tf("infra", "init", "-input=false", "-reconfigure", "-backend-config=backend.hcl")
     tf("infra", "validate")
-    pause_existing(outputs())
+    existing = outputs()
+    if existing.get("ecs_service_name"):
+        # El plan detecta incompatibilidades antes de interrumpir el servicio anterior.
+        plan_phase(tag, False)
+    pause_existing(existing)
     apply_phase(tag, False)
     out = outputs()
     push_image(tag, out["ecr_repository_url"])
+    if out.get("rds_proxy_name"):
+        esperar_proxy(out["rds_proxy_name"])
     migrate(out)
+    comprobar_reporte(out)
     apply_phase(tag, True)
     activate(outputs())
 
