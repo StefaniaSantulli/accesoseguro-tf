@@ -57,6 +57,18 @@ resource "aws_apigatewayv2_route" "api" {
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
 }
 
+# Preflight de CORS: el navegador manda OPTIONS SIN token antes de cada pedido
+# con Authorization. La ruta ANY de arriba también atrapa los OPTIONS y el
+# authorizer los rechazaría (el navegador muestra "Load failed"). Esta ruta,
+# más específica y sin authorizer, los deja pasar; API Gateway agrega los
+# headers CORS configurados en la API. Flask solo responde el OPTIONS (no
+# ejecuta ninguna acción).
+resource "aws_apigatewayv2_route" "api_preflight" {
+  api_id    = aws_apigatewayv2_api.auth.id
+  route_key = "OPTIONS /api/{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.api.id}"
+}
+
 # Health check público (lo usa scripts/deploy.py para comprobar el despliegue).
 resource "aws_apigatewayv2_route" "health" {
   api_id    = aws_apigatewayv2_api.auth.id
