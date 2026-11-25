@@ -38,14 +38,12 @@ function leerClaims(token) {
   history.replaceState(null, "", location.pathname + location.search);
   limpiarTokens();
   storageDel(sessionStorage, "accesoseguro_oauth_state");
-  const access = leerClaims(params.get("access_token"));
   const id = leerClaims(params.get("id_token"));
   if (!esperado || params.get("state") !== esperado || params.has("error") ||
-      !access || !id || access.token_use !== "access" || id.token_use !== "id" || access.sub !== id.sub) {
+      !id || id.token_use !== "id" || !id.sub) {
     storageSet(sessionStorage, "accesoseguro_login_error", "No se pudo completar el ingreso. Volvé a iniciar sesión.");
     return;
   }
-  storageSet(sessionStorage, "accesoseguro_access_token", params.get("access_token"));
   storageSet(sessionStorage, "accesoseguro_id_token", params.get("id_token"));
 })();
 

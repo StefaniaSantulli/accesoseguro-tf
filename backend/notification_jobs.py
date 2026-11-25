@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta
 
 import boto3
-from sqlalchemy import MetaData, Table, URL, create_engine, select, update
+from sqlalchemy import MetaData, Table, URL, create_engine, event, select, update
 from sqlalchemy.pool import NullPool
 import notifications
 
@@ -14,10 +14,19 @@ def database_engine():
         SecretId=os.environ["DB_SECRET_ARN"])["SecretString"])
     url = URL.create("postgresql+psycopg", username=secret["username"], password=secret["password"],
                      host=secret["host"], port=int(secret.get("port", 5432)), database=secret["dbname"])
-    return create_engine(url, poolclass=NullPool, connect_args={
+    engine = create_engine(url, poolclass=NullPool, connect_args={
         "connect_timeout": 5, "sslmode": "verify-full", "sslrootcert": "/opt/python/rds-ca.pem",
-        "options": "-c statement_timeout=10000 -c lock_timeout=2000 -c timezone=UTC",
     })
+
+    # RDS Proxy acepta el protocolo PostgreSQL, pero restringe los parámetros de inicio.
+    # Estos ajustes solo duran hasta el commit o rollback de la transacción.
+    @event.listens_for(engine, "begin")
+    def configurar_transaccion(conn):
+        conn.exec_driver_sql("SET LOCAL statement_timeout = '10s'")
+        conn.exec_driver_sql("SET LOCAL lock_timeout = '2s'")
+        conn.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
+
+    return engine
 
 
 def expire(conn, seconds, limit=100, now=None):

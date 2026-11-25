@@ -5,9 +5,6 @@ locals {
   name_prefix = lower("${var.project_name}-${var.environment}")
   account_id  = data.aws_caller_identity.current.account_id
 
-  # Zonas fijas del proyecto; el orden conserva los CIDR de las capas a/b.
-  azs = ["us-east-1a", "us-east-1b"]
-
   common_tags = {
     Project     = var.project_name
     Environment = var.environment
@@ -16,12 +13,11 @@ locals {
   }
 
   # ---------------------------------------------------------------------------
-  # Red: 3 capas x 2 AZ (ver modules/network)
+  # Red: 2 capas privadas x 2 AZ (ver modules/network)
   # ---------------------------------------------------------------------------
   subnet_tiers = {
-    publica = { newbits = 8, netnum_offset = 1, public = true }   # ALB
-    app     = { newbits = 8, netnum_offset = 11, public = false } # ECS, Lambdas, endpoints
-    datos   = { newbits = 8, netnum_offset = 21, public = false } # RDS
+    app   = { newbits = 8, netnum_offset = 11, public = false } # ALB, VPC Link, ECS, Lambdas, proxy y endpoints
+    datos = { newbits = 8, netnum_offset = 21, public = false } # RDS
   }
 
   # ---------------------------------------------------------------------------
@@ -37,14 +33,15 @@ locals {
   }
 
   # Todas las entradas tienen la misma forma para poder usarlas en un for_each.
-  sg_ingress_rules = {
+  sg_ingress_rules = merge({
     alb_from_vpclink      = { sg = "alb", port = 80, source_sg = "vpclink", cidr = null, description = "HTTP solo desde API Gateway (VPC Link)" }
     ecs_from_alb          = { sg = "ecs", port = var.api_container_port, source_sg = "alb", cidr = null, description = "Flask solo desde el ALB" }
-    rds_from_ecs          = { sg = "rds", port = 5432, source_sg = "ecs", cidr = null, description = "PostgreSQL desde ECS" }
-    rds_from_lambda       = { sg = "rds", port = 5432, source_sg = "lambda", cidr = null, description = "PostgreSQL desde Lambdas" }
     endpoints_from_ecs    = { sg = "endpoints", port = 443, source_sg = "ecs", cidr = null, description = "HTTPS a endpoints desde ECS" }
     endpoints_from_lambda = { sg = "endpoints", port = 443, source_sg = "lambda", cidr = null, description = "HTTPS a endpoints desde Lambdas" }
-  }
+    }, var.enable_rds_proxy ? {} : {
+    rds_from_ecs    = { sg = "rds", port = 5432, source_sg = "ecs", cidr = null, description = "PostgreSQL desde ECS" }
+    rds_from_lambda = { sg = "rds", port = 5432, source_sg = "lambda", cidr = null, description = "PostgreSQL desde Lambdas" }
+  })
 
   # protocol "-1" = todo el tráfico. ECS y Lambda pueden salir a cualquier
   # destino DENTRO de la VPC: igual no hay ruta a internet.
@@ -294,20 +291,19 @@ locals {
     AUTO_INIT_DB = "false"
     PORT         = tostring(var.api_container_port)
     # Con RDS Proxy activo, la API se conecta al proxy en vez de a la instancia.
-    DB_HOST              = var.enable_rds_proxy ? aws_db_proxy.main[0].endpoint : aws_db_instance.main.address
-    DB_PORT              = tostring(aws_db_instance.main.port)
-    DB_NAME              = var.db_name
-    DB_USER              = var.db_username
-    COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
-    COGNITO_CLIENT_ID    = aws_cognito_user_pool_client.web.id
-    COGNITO_ISSUER       = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.main.id}"
-    SNS_TOPIC_ARN        = aws_sns_topic.eventos_solicitud.arn
-    DOCS_BUCKET          = local.bucket_names["documentos"]
-    REPORT_LAMBDA_NAME   = module.lambdas["generar-reporte"].function_name
-    ROLES_LAMBDA_NAME    = module.lambdas["gestionar-usuarios"].function_name
-    PRESIGNED_URL_TTL    = tostring(var.presigned_url_ttl_seconds)
-    CORS_ALLOWED_ORIGIN  = local.site_url
-    MAX_PDF_SIZE_MB      = tostring(var.max_pdf_size_mb)
+    DB_HOST             = local.db_host
+    DB_PORT             = tostring(aws_db_instance.main.port)
+    DB_NAME             = var.db_name
+    DB_USER             = var.db_username
+    COGNITO_CLIENT_ID   = aws_cognito_user_pool_client.web.id
+    COGNITO_ISSUER      = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.main.id}"
+    SNS_TOPIC_ARN       = aws_sns_topic.eventos_solicitud.arn
+    DOCS_BUCKET         = local.bucket_names["documentos"]
+    REPORT_LAMBDA_NAME  = module.lambdas["generar-reporte"].function_name
+    ROLES_LAMBDA_NAME   = module.lambdas["gestionar-usuarios"].function_name
+    PRESIGNED_URL_TTL   = tostring(var.presigned_url_ttl_seconds)
+    CORS_ALLOWED_ORIGIN = local.site_url
+    MAX_PDF_SIZE_MB     = tostring(var.max_pdf_size_mb)
   }
 
   # ---------------------------------------------------------------------------

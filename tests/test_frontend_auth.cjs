@@ -21,7 +21,7 @@ function browser(hash = '', state = 'a'.repeat(64), config = true) {
     sessionStorage: storage(), localStorage: storage(),
     location: { hash, pathname: '/', search: '', href: '' },
     history: { replaceState() {} }, alert: () => {}, document: {},
-    window: { APP_CONFIG: config ? { loginUrl: 'https://login.example.invalid/login?client_id=test', apiUrl: 'http://alb.example.invalid' } : null },
+    window: { APP_CONFIG: config ? { loginUrl: 'https://login.example.invalid/login?client_id=test', apiUrl: 'https://api.example.invalid' } : null },
   };
   context.window.location = context.location;
   if (state) context.sessionStorage.setItem('accesoseguro_oauth_state', state);
@@ -33,8 +33,11 @@ function browser(hash = '', state = 'a'.repeat(64), config = true) {
 function run(context, code) { return vm.runInContext(code, context); }
 const access = jwt('access');
 const id = jwt('id', ['porteros'], { email: 'person@example.invalid' });
-const hash = '#access_token=' + access + '&id_token=' + id + '&state=' + 'a'.repeat(64);
+const hash = '#id_token=' + id + '&state=' + 'a'.repeat(64);
 let context = browser(hash);
+assert.equal(run(browser(hash.replace(id, access)), 'getToken()'), null);
+assert.equal(run(browser(hash + '&access_token=' + access), 'getToken()'), id);
+assert.equal(browser(hash + '&access_token=' + access).sessionStorage.getItem('accesoseguro_access_token'), null);
 // API Gateway valida el ID token: es el que viaja a la API.
 assert.equal(run(context, 'getToken()'), id);
 assert.equal(run(context, 'authHeaders().Authorization'), 'Bearer ' + id);

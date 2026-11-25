@@ -7,13 +7,14 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import OperationalError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 import notifications as n
+import notification_jobs
 
 
 @unittest.skipUnless(os.environ.get('TEST_POSTGRES_URL'), 'Requiere PostgreSQL de pruebas; configurado en CI')
@@ -40,6 +41,23 @@ class PostgresConcurrencyTests(unittest.TestCase):
         with self.admin.begin() as conn:
             conn.exec_driver_sql(f'DROP SCHEMA {self.schema} CASCADE')
         self.admin.dispose()
+
+    def test_worker_timeouts_and_timezone_apply_to_each_transaction(self):
+        secret = {"username": "worker", "password": "test", "host": "proxy.invalid", "dbname": "test"}
+        secrets = Mock()
+        secrets.get_secret_value.return_value = {"SecretString": json.dumps(secret)}
+        with patch.dict(os.environ, DB_SECRET_ARN="test"), patch.object(notification_jobs.boto3, "client", return_value=secrets), \
+                patch.object(notification_jobs, "create_engine", return_value=self.engine) as create:
+            engine = notification_jobs.database_engine()
+        self.assertNotIn("options", create.call_args.kwargs["connect_args"])
+        self.assertEqual(create.call_args.kwargs["connect_args"]["sslmode"], "verify-full")
+        with engine.connect() as conn:
+            for finish in (conn.commit, conn.rollback):
+                settings = conn.exec_driver_sql(
+                    "SELECT current_setting('statement_timeout'), current_setting('lock_timeout'), current_setting('TimeZone')"
+                ).one()
+                self.assertEqual(tuple(settings), ("10s", "2s", "UTC"))
+                finish()
 
     def publish(self):
         with self.engine.begin() as conn:

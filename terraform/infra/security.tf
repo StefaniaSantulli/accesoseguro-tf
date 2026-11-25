@@ -2,7 +2,7 @@
 # SEGURIDAD: KMS, Secrets Manager y CloudTrail.
 # IAM: en el Learner Lab no se crean roles; ECS y Lambdas usan LabRole
 # (data.aws_iam_role.lab_role). Sí se escriben políticas sobre los recursos
-# (buckets, tópico y colas). Shield Standard viene activado solo en el ALB.
+# (buckets, tópico y colas).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -76,7 +76,7 @@ resource "aws_secretsmanager_secret_version" "db" {
     username = var.db_username
     password = random_password.db.result
     # Las Lambdas leen el host de acá: con RDS Proxy activo apuntan al proxy.
-    host   = var.enable_rds_proxy ? aws_db_proxy.main[0].endpoint : aws_db_instance.main.address
+    host   = local.db_host
     port   = aws_db_instance.main.port
     dbname = var.db_name
   })

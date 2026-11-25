@@ -6,7 +6,6 @@
 
 locals {
   # Producto cartesiano capa x AZ. Para la VPC 10.0.0.0/16 queda:
-  #   publica-a 10.0.1.0/24   publica-b 10.0.2.0/24
   #   app-a     10.0.11.0/24  app-b     10.0.12.0/24
   #   datos-a   10.0.21.0/24  datos-b   10.0.22.0/24
   subnets = merge([
@@ -43,8 +42,7 @@ resource "aws_subnet" "this" {
   cidr_block        = each.value.cidr
   availability_zone = each.value.az
 
-  # Ni siquiera las públicas reparten IP pública: lo único que vive ahí es el
-  # ALB, que tiene sus propias IPs.
+  # La VPC de la aplicación solo utiliza direcciones privadas.
   map_public_ip_on_launch = false
 
   tags = merge(var.tags, {

@@ -14,7 +14,8 @@ vencer_permisos_intervalo_minutos = 15    # frecuencia de la Lambda vencer-permi
 alarm_email = ""
 
 # RDS
-db_multi_az = true
+db_multi_az      = true
+enable_rds_proxy = true
 
 # Poner true solo si el Learner Lab deja crear trails.
 enable_cloudtrail = false

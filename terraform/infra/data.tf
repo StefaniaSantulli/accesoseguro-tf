@@ -7,5 +7,11 @@ data "aws_iam_role" "lab_role" {
   name = var.lab_role_name
 }
 
-# La firma de los tokens ya no se valida en Flask: lo hace el authorizer JWT de
-# API Gateway (api.tf), que baja y renueva solo las llaves públicas de Cognito.
+# IDs físicos admitidos por VPC Link V2 en us-east-1. También admiten RDS Proxy.
+data "aws_availability_zones" "vpc_link" {
+  state = "available"
+  filter {
+    name   = "zone-id"
+    values = ["use1-az1", "use1-az2", "use1-az4", "use1-az5", "use1-az6"]
+  }
+}

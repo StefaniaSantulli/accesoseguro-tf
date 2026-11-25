@@ -16,7 +16,7 @@ class DeploymentTests(unittest.TestCase):
         manager = Mock()
         out = {'ecr_repository_url': 'ecr/repo'}
         with ExitStack() as stack:
-            for name in ['run', 'bootstrap', 'tf', 'pause_existing', 'apply_phase', 'push_image', 'migrate', 'activate']:
+            for name in ['run', 'bootstrap', 'tf', 'pause_existing', 'apply_phase', 'push_image', 'migrate', 'comprobar_reporte', 'activate']:
                 mocked = stack.enter_context(patch.object(deploy, name))
                 manager.attach_mock(mocked, name)
                 if name == failure:
@@ -33,16 +33,24 @@ class DeploymentTests(unittest.TestCase):
         manager = self.fake_pipeline()
         names = [call[0] for call in manager.mock_calls]
         self.assertLess(names.index('push_image'), names.index('migrate'))
-        self.assertLess(names.index('migrate'), len(names) - 2)
+        self.assertLess(names.index('migrate'), names.index('comprobar_reporte'))
+        self.assertLess(names.index('comprobar_reporte'), len(names) - 2)
         self.assertEqual(manager.apply_phase.call_args_list[0].args, ('sha', False))
         self.assertEqual(manager.apply_phase.call_args_list[1].args, ('sha', True))
         self.assertEqual(names[-1], 'activate')
 
     def test_failed_migration_or_image_does_not_activate_service(self):
-        for step in ('migrate', 'push_image'):
+        for step in ('migrate', 'push_image', 'comprobar_reporte'):
             manager = self.fake_pipeline(step)
             manager.activate.assert_not_called()
             self.assertEqual(manager.apply_phase.call_count, 1)
+
+    def test_proxy_waits_until_target_available(self):
+        responses = [{"Targets": []}, {"Targets": [{"TargetHealth": {"State": "REGISTERING"}}]},
+                     {"Targets": [{"TargetHealth": {"State": "AVAILABLE"}}]}]
+        with patch.object(deploy, "aws_json", side_effect=responses), patch.object(deploy.time, "sleep") as sleep:
+            deploy.esperar_proxy("test")
+        self.assertEqual(sleep.call_count, 2)
 
     def test_nonzero_task_exit_fails_deployment(self):
         out = {'ecs_cluster_name': 'cluster', 'deployment': {'task_definition': 'definition', 'network_configuration': {}}}

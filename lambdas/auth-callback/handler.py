@@ -2,7 +2,7 @@
 
 Cognito redirige a GET /callback?code=... (API Gateway). Esta función cambia
 el code por los tokens en el endpoint /oauth2/token de Cognito y devuelve al
-usuario al sitio con los tokens después del "#" (el fragmento no se manda a
+usuario al sitio con el ID token después del "#" (el fragmento no se manda a
 ningún servidor ni queda en los logs del ALB).
 """
 import base64
@@ -73,8 +73,6 @@ def lambda_handler(event, context):
 
     fragment = urllib.parse.urlencode({
         "id_token": tokens["id_token"],
-        "access_token": tokens["access_token"],
-        "expires_in": tokens.get("expires_in", 3600),
         "state": state,
     })
     return _redirect(f"{frontend}/#{fragment}")
